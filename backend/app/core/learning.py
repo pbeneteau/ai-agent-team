@@ -67,7 +67,7 @@ needs to know to do their job on this specific project.
 Keep each file under 400 words. Be precise, avoid fluff.
 Organize by agent in your response using this format:
 
----AGENT:{agent_id}---
+---AGENT:{{agent_id}}---
 (markdown content here)
 ---END---
 
@@ -324,7 +324,7 @@ Focus only on what is relevant to each agent's specialization. Ignore sections t
 Keep each file under 600 words. Be precise and actionable.
 
 Format your response as:
----AGENT:{agent_id}---
+---AGENT:{{agent_id}}---
 (updated markdown content)
 ---END---
 

@@ -49,16 +49,17 @@ function extractPlanCard(content: string): PlanCard | null {
 
 const STORAGE_KEY = "alex_chat_history";
 const MAX_STORED = 60;
+const DEFAULT_MESSAGES: Message[] = [{
+  role: "assistant",
+  content: "Bonjour ! Je suis Alex, votre associé IA. Je suis là pour vous aider à construire et gérer votre équipe. Commencez par me parler de votre projet — qu'est-ce que vous créez ?",
+}];
 
 function loadHistory(): Message[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) return JSON.parse(raw) as Message[];
   } catch {}
-  return [{
-    role: "assistant",
-    content: "Bonjour ! Je suis Alex, votre associé IA. Je suis là pour vous aider à construire et gérer votre équipe. Commencez par me parler de votre projet — qu'est-ce que vous créez ?",
-  }];
+  return DEFAULT_MESSAGES;
 }
 
 function saveHistory(messages: Message[]) {
@@ -68,7 +69,8 @@ function saveHistory(messages: Message[]) {
 }
 
 export function ChatPanel({ onTaskCreated }: ChatPanelProps) {
-  const [messages, setMessages] = useState<Message[]>(() => loadHistory());
+  const [messages, setMessages] = useState<Message[]>(DEFAULT_MESSAGES);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
   const [input, setInput] = useState("");
   const [isConnected, setIsConnected] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -197,6 +199,11 @@ export function ChatPanel({ onTaskCreated }: ChatPanelProps) {
 
   const [briefingDocId, setBriefingDocId] = useState<string | null>(null);
 
+  useEffect(() => {
+    setMessages(loadHistory());
+    setHistoryLoaded(true);
+  }, []);
+
   const handleBriefAgents = useCallback(async (doc: Document) => {
     setBriefingDocId(doc.id);
     try {
@@ -214,8 +221,9 @@ export function ChatPanel({ onTaskCreated }: ChatPanelProps) {
 
   // Persist messages to localStorage whenever they change
   useEffect(() => {
+    if (!historyLoaded) return;
     saveHistory(messages.filter((m) => !m.streaming));
-  }, [messages]);
+  }, [historyLoaded, messages]);
 
   // Connect/reconnect WS when mode changes
   useEffect(() => {
