@@ -6,6 +6,7 @@ import asyncio
 import logging
 from fastapi import APIRouter, BackgroundTasks, UploadFile, File, Form, HTTPException
 
+from app.core.knowledge import get_knowledge_audit_service
 from app.core.document_store import get_document_store
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,28 @@ async def upload_document(
         raw_bytes=raw,
         description=description,
     )
+    get_knowledge_audit_service().invalidate_all()
     return meta.to_dict()
+
+
+@router.get("/{doc_id}/preview")
+def get_document_preview(doc_id: str):
+    """Return document metadata plus a short extracted preview."""
+    store = get_document_store()
+    meta = store.get_document(doc_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    max_chars = 2400
+    preview_with_guard = store.get_full_text(doc_id, max_chars=max_chars + 1)
+    truncated = len(preview_with_guard) > max_chars
+    preview = preview_with_guard[:max_chars]
+
+    return {
+        **meta.to_dict(),
+        "preview": preview,
+        "truncated": truncated,
+    }
 
 
 @router.post("/{doc_id}/brief-agents")
@@ -67,6 +89,7 @@ async def brief_agents_with_document(doc_id: str, background_tasks: BackgroundTa
     from app.api.websocket_manager import get_manager
     manager = get_manager()
     background_tasks.add_task(run_document_rebriefing, doc_id, manager.broadcast)
+    get_knowledge_audit_service().invalidate_all()
     return {"ok": True, "message": "Rebriefing lancé en arrière-plan"}
 
 
@@ -76,4 +99,5 @@ def delete_document(doc_id: str):
     store = get_document_store()
     if not store.delete(doc_id):
         raise HTTPException(status_code=404, detail="Document not found")
+    get_knowledge_audit_service().invalidate_all()
     return {"ok": True}

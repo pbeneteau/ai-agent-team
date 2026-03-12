@@ -14,14 +14,18 @@ from pathlib import Path
 from typing import Optional
 
 from app.config import get_settings
+from app.config.document_limits import (
+    DOCUMENT_CHUNK_OVERLAP,
+    DOCUMENT_CHUNK_SIZE,
+    DOCUMENT_CONTEXT_MAX_CHARS,
+    DOCUMENT_CONTEXT_RESULTS,
+    DOCUMENT_FULL_TEXT_MAX_CHARS,
+    DOCUMENTS_COLLECTION,
+    DOCUMENT_SEARCH_RESULTS,
+)
 from app.memory.vector_store import get_vector_store
 
 logger = logging.getLogger(__name__)
-
-DOCUMENTS_COLLECTION = "user_documents"
-CHUNK_SIZE = 1000       # chars per ChromaDB chunk
-CHUNK_OVERLAP = 100     # overlap between consecutive chunks
-
 
 class DocumentMeta:
     def __init__(self, doc_id: str, filename: str, content_type: str,
@@ -146,7 +150,7 @@ class DocumentStore:
         logger.info(f"Document deleted: {doc_id}")
         return True
 
-    def search(self, query: str, n_results: int = 3) -> list[dict]:
+    def search(self, query: str, n_results: int = DOCUMENT_SEARCH_RESULTS) -> list[dict]:
         """Return the most relevant document chunks for a given query."""
         try:
             results = self.vector_store.query(
@@ -159,9 +163,9 @@ class DocumentStore:
             logger.warning(f"Document search failed: {e}")
             return []
 
-    def format_for_context(self, query: str, max_chars: int = 1500) -> str:
+    def format_for_context(self, query: str, max_chars: int = DOCUMENT_CONTEXT_MAX_CHARS) -> str:
         """Return a formatted string of relevant document excerpts for injection into prompts."""
-        chunks = self.search(query, n_results=4)
+        chunks = self.search(query, n_results=DOCUMENT_CONTEXT_RESULTS)
         if not chunks:
             return ""
 
@@ -215,7 +219,7 @@ class DocumentStore:
         doc = Document(str(path))
         return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
 
-    def get_full_text(self, doc_id: str, max_chars: int = 20000) -> str:
+    def get_full_text(self, doc_id: str, max_chars: int = DOCUMENT_FULL_TEXT_MAX_CHARS) -> str:
         """Return the full extracted text of a document (capped at max_chars)."""
         meta = self._index.get(doc_id)
         if not meta:
@@ -242,9 +246,9 @@ class DocumentStore:
         chunks = []
         start = 0
         while start < len(text):
-            end = start + CHUNK_SIZE
+            end = start + DOCUMENT_CHUNK_SIZE
             chunks.append(text[start:end])
-            start += CHUNK_SIZE - CHUNK_OVERLAP
+            start += DOCUMENT_CHUNK_SIZE - DOCUMENT_CHUNK_OVERLAP
         return chunks
 
 

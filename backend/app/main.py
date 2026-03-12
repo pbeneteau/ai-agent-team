@@ -4,8 +4,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.api.routes import chat, agents, teams, tasks, documents, usage
+from app.api.routes import agents, chat, documents, git_providers, mcp, tasks, teams, usage
 from app.core.agent_factory import get_agent_factory
+from app.core.orchestrator import get_orchestrator
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,6 +25,17 @@ async def lifespan(app: FastAPI):
     factory = get_agent_factory()
     associate = factory.get_or_create_associate()
     logger.info(f"Associate agent ready: {associate.name} ({associate.id})")
+
+    orchestrator = get_orchestrator()
+    task_recovery = orchestrator.reconcile_interrupted_tasks()
+    agent_recovery = factory.reconcile_runtime_state_after_restart()
+    if task_recovery["recovered_tasks"] or agent_recovery["updated_agents"]:
+        logger.warning(
+            "Recovered local runtime state after restart: %s interrupted task(s), %s interrupted node(s), %s agent(s) reconciled.",
+            task_recovery["recovered_tasks"],
+            task_recovery["recovered_nodes"],
+            agent_recovery["updated_agents"],
+        )
 
     yield
 
@@ -54,6 +66,8 @@ def create_app() -> FastAPI:
     app.include_router(tasks.router, prefix="/api")
     app.include_router(documents.router, prefix="/api")
     app.include_router(usage.router, prefix="/api")
+    app.include_router(mcp.router, prefix="/api")
+    app.include_router(git_providers.router, prefix="/api")
 
     @app.get("/health")
     def health():

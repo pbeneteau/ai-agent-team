@@ -10,6 +10,10 @@ import {
   ReactNode,
 } from "react";
 import { WSClient, WSMessage } from "./websocket";
+import {
+  TOAST_DURATION_MS,
+  WS_BROADCAST_EVENTS,
+} from "@/lib/config/realtime";
 import { CheckCircle, XCircle, Info, X } from "lucide-react";
 
 type WsEventHandler = (msg: WSMessage) => void;
@@ -45,16 +49,6 @@ const WsContext = createContext<WsContextValue>({ subscribe: () => () => {} });
 // Events that are sent via broadcast (not personal) and should be relayed to subscribers.
 // Personal messages (stream_start, stream_chunk, stream_end, error, navigate, pong)
 // are handled by the ChatPanel itself and intentionally excluded here.
-const BROADCAST_EVENTS = new Set([
-  "agent_status",
-  "task_update",
-  "task_created",
-  "team_created",
-  "briefing_start",
-  "briefing_complete",
-  "research_complete",
-]);
-
 // ─── Toast display ───────────────────────────────────────────────────────────
 
 const KIND_CONFIG: Record<ToastKind, { icon: React.ReactNode; bg: string; text: string }> = {
@@ -104,40 +98,45 @@ function ToastContainer({ toasts, dismiss }: { toasts: Toast[]; dismiss: (id: nu
 // ─── Combined provider ───────────────────────────────────────────────────────
 
 function wsEventToToast(msg: WSMessage): { kind: ToastKind; message: string } | null {
-  const data = (msg.data ?? {}) as Record<string, string>;
+  const data = (msg.data ?? {}) as Record<string, unknown>;
+  const agentName = typeof data.name === "string" ? data.name : "Agent";
+  const taskTitle = typeof data.current_task_title === "string" ? data.current_task_title : "a task";
 
   switch (msg.type) {
     case "agent_status":
-      if (data.status === "ready") {
-        return { kind: "success", message: `${data.name ?? "Agent"} est prêt` };
-      }
       if (data.status === "error") {
-        return { kind: "error", message: `${data.name ?? "Agent"} : erreur d'apprentissage` };
+        return { kind: "error", message: `${agentName}: agent error` };
+      }
+      if (data.occupancy_status === "busy") {
+        return { kind: "info", message: `${agentName} is working on ${taskTitle}` };
       }
       return null;
 
     case "task_update":
       if (data.status === "completed") {
-        return { kind: "success", message: `Tâche terminée avec succès` };
+        return { kind: "success", message: `Task completed successfully` };
       }
       if (data.status === "failed") {
-        return { kind: "error", message: `Tâche échouée` };
+        return { kind: "error", message: `Task failed` };
       }
       return null;
 
     case "task_created":
-      return { kind: "info", message: `Nouvelle tâche créée` };
+      return { kind: "info", message: `New task created` };
+
+    case "task_deleted":
+      return null;
 
     case "research_complete":
       return {
         kind: "success",
-        message: `Recherche terminée : ${data.topic ?? ""}`,
+        message: `Research completed: ${data.topic ?? ""}`,
       };
 
     case "briefing_complete":
       return {
         kind: "info",
-        message: `Briefing projet distribué à ${data.agent_count ?? data.agents_updated ?? "?"} agents`,
+        message: `Project brief distributed to ${data.agent_count ?? data.agents_updated ?? "?"} agents`,
       };
 
     default:
@@ -146,7 +145,6 @@ function wsEventToToast(msg: WSMessage): { kind: ToastKind; message: string } | 
 }
 
 let _toastSeq = 0;
-const TOAST_DURATION_MS = 5000;
 
 export function WsEventProvider({ children }: { children: ReactNode }) {
   const wsRef = useRef<WSClient | null>(null);
@@ -169,7 +167,7 @@ export function WsEventProvider({ children }: { children: ReactNode }) {
     ws.connect();
 
     const unsub = ws.onMessage((msg) => {
-      if (!BROADCAST_EVENTS.has(msg.type)) return;
+      if (!WS_BROADCAST_EVENTS.has(msg.type)) return;
       handlersRef.current.forEach((h) => h(msg));
 
       // Push toast for relevant events

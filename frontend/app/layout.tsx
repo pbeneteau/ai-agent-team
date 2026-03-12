@@ -7,8 +7,8 @@ import { Providers } from "./providers";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "AI Agent Team",
-  description: "Votre orchestrateur d'équipe d'agents IA",
+  title: "Alex Ops Desk",
+  description: "Local-first control desk for AI agent teams, explicit plans, and observability.",
 };
 
 export default function RootLayout({
@@ -17,12 +17,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="fr">
-      <body className={`${inter.className} bg-slate-50 antialiased`}>
+    <html lang="en">
+      <body className={`${inter.className} bg-[var(--ops-canvas)] antialiased`}>
         <Providers>
           <div className="flex h-screen overflow-hidden">
             <Sidebar />
-            <main className="flex-1 overflow-hidden h-full">{children}</main>
+            <main className="h-full min-w-0 flex-1 overflow-hidden bg-[var(--ops-canvas)]">{children}</main>
           </div>
         </Providers>
       </body>

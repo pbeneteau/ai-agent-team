@@ -1,10 +1,24 @@
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from typing import Optional
-from app.config import get_settings
+from app.api.websocket_manager import get_manager
+from app.config import get_settings, has_github_access, has_model_override, has_web_search
+from app.core.git_provider_store import get_git_provider_store
+from app.core.mcp_connection_store import get_mcp_connection_store
 from app.core.agent_factory import get_agent_factory
+from app.core.knowledge import get_knowledge_audit_service
+from app.core.learning import run_agent_research, run_targeted_rebriefing
 from app.core.workspace import get_workspace_manager
+from app.models.knowledge import AgentKnowledgeReadiness, GlobalKnowledgeReadiness
 from app.models.agent import AgentResponse, AgentModelUpdate, ModelTier
+from app.models.git_providers import (
+    AgentGitBindingResolved,
+    AgentGitBindingUpdateRequest,
+)
+from app.models.mcp import (
+    AgentMcpBindingUpdateRequest,
+    AgentMcpToolBindingResolved,
+)
 
 
 class SkillWrite(BaseModel):
@@ -14,6 +28,62 @@ class SkillWrite(BaseModel):
 router = APIRouter(prefix="/agents", tags=["agents"])
 
 
+def _resolve_agent_git_bindings(agent) -> list[AgentGitBindingResolved]:
+    store = get_git_provider_store()
+    resolved: list[AgentGitBindingResolved] = []
+    for binding in agent.git_bindings:
+        connection = store.get_connection(binding.connection_id)
+        if connection is None:
+            continue
+        repo = store.get_repo(binding.connection_id, binding.repo_full_name)
+        if repo is None:
+            continue
+        resolved.append(
+            AgentGitBindingResolved(
+                connection_id=connection.id,
+                connection_name=connection.name,
+                provider=connection.provider,
+                repo_full_name=repo.full_name,
+                repo_web_url=repo.web_url,
+                default_branch=repo.default_branch,
+                enabled=binding.enabled,
+                can_push=binding.can_push,
+                can_open_pr=binding.can_open_pr,
+                branch_prefix=binding.branch_prefix,
+                connection_status=connection.status,
+            )
+        )
+    return resolved
+
+
+def _resolve_agent_mcp_tool_bindings(agent) -> list[AgentMcpToolBindingResolved]:
+    store = get_mcp_connection_store()
+    resolved: list[AgentMcpToolBindingResolved] = []
+    for binding in agent.mcp_tool_bindings:
+        connection = store.get_connection(binding.connection_id)
+        if connection is None:
+            continue
+        descriptors = {tool.name: tool for tool in store.list_tools(connection.id)}
+        descriptor = descriptors.get(binding.tool_name)
+        if descriptor is None:
+            continue
+        resolved.append(
+            AgentMcpToolBindingResolved(
+                connection_id=connection.id,
+                connection_name=connection.name,
+                tool_name=binding.tool_name,
+                enabled=binding.enabled,
+                alias=binding.alias,
+                approval_mode=binding.approval_mode,
+                description=descriptor.description,
+                read_only=descriptor.read_only,
+                capability_class=descriptor.capability_class,
+                connection_status=connection.status,
+            )
+        )
+    return resolved
+
+
 def _to_response(a) -> AgentResponse:
     return AgentResponse(
         id=a.id,
@@ -21,11 +91,22 @@ def _to_response(a) -> AgentResponse:
         role=a.role,
         title=a.title,
         specialization=a.specialization,
+        goal=a.goal,
+        backstory=a.backstory,
         status=a.status,
+        occupancy_status=a.occupancy_status,
+        occupancy_reason=a.occupancy_reason,
+        current_task_id=a.current_task_id,
+        current_task_title=a.current_task_title,
+        current_node_id=a.current_node_id,
+        current_node_title=a.current_node_title,
+        busy_since=a.busy_since,
         team_id=a.team_id,
         parent_id=a.parent_id,
         workspace_path=a.workspace_path,
         tools=a.tools,
+        git_bindings=_resolve_agent_git_bindings(a),
+        mcp_tool_bindings=_resolve_agent_mcp_tool_bindings(a),
         model_tier=a.model_tier,
         max_iter=a.max_iter,
     )
@@ -50,8 +131,62 @@ def get_capabilities():
     """Return which optional capabilities are available based on configured API keys."""
     settings = get_settings()
     return {
-        "web_search": bool(settings.serper_api_key),
+        "web_search": has_web_search(settings),
+        "github_search": has_github_access(settings),
+        "model_override": has_model_override(settings),
+        "mcp_connections": True,
+        "git_provider_connections": True,
     }
+
+
+@router.get("/{agent_id}/git-bindings", response_model=list[AgentGitBindingResolved])
+def get_agent_git_bindings(agent_id: str):
+    agent = get_agent_factory().get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return _resolve_agent_git_bindings(agent)
+
+
+@router.put("/{agent_id}/git-bindings", response_model=list[AgentGitBindingResolved])
+def update_agent_git_bindings(agent_id: str, body: AgentGitBindingUpdateRequest):
+    factory = get_agent_factory()
+    agent = factory.update_agent_git_bindings(agent_id, body.bindings)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return _resolve_agent_git_bindings(agent)
+
+
+@router.get("/{agent_id}/mcp-tools", response_model=list[AgentMcpToolBindingResolved])
+def get_agent_mcp_tools(agent_id: str):
+    agent = get_agent_factory().get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return _resolve_agent_mcp_tool_bindings(agent)
+
+
+@router.put("/{agent_id}/mcp-tools", response_model=list[AgentMcpToolBindingResolved])
+def update_agent_mcp_tools(agent_id: str, body: AgentMcpBindingUpdateRequest):
+    factory = get_agent_factory()
+    agent = factory.update_agent_mcp_tool_bindings(agent_id, body.bindings)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return _resolve_agent_mcp_tool_bindings(agent)
+
+
+def _get_global_knowledge_readiness_payload() -> GlobalKnowledgeReadiness:
+    return get_knowledge_audit_service().get_global_readiness()
+
+
+@router.get("/readiness/global", response_model=GlobalKnowledgeReadiness)
+def get_global_knowledge_readiness():
+    """Return a global summary of agent knowledge readiness."""
+    return _get_global_knowledge_readiness_payload()
+
+
+@router.get("/knowledge-readiness", response_model=GlobalKnowledgeReadiness)
+def get_knowledge_readiness():
+    """Return a global summary of agent knowledge readiness."""
+    return _get_global_knowledge_readiness_payload()
 
 
 @router.get("/{agent_id}", response_model=AgentResponse)
@@ -60,6 +195,61 @@ def get_agent(agent_id: str):
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     return _to_response(agent)
+
+
+@router.get("/{agent_id}/knowledge-recommendations", response_model=AgentKnowledgeReadiness)
+def get_agent_knowledge_recommendations(agent_id: str):
+    """Return knowledge readiness and recommendations for a single agent."""
+    agent = get_agent_factory().get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return get_knowledge_audit_service().get_agent_readiness(agent_id)
+
+
+@router.post("/{agent_id}/knowledge-recommendations/{recommendation_id}/dismiss", response_model=AgentKnowledgeReadiness)
+def dismiss_agent_knowledge_recommendation(agent_id: str, recommendation_id: str):
+    """Dismiss a knowledge recommendation for this agent."""
+    agent = get_agent_factory().get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    try:
+        return get_knowledge_audit_service().dismiss_recommendation(agent_id, recommendation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.post("/{agent_id}/knowledge-recommendations/{recommendation_id}/apply", response_model=AgentKnowledgeReadiness)
+async def apply_agent_knowledge_recommendation(agent_id: str, recommendation_id: str, background_tasks: BackgroundTasks):
+    """
+    Apply a recommendation when it can be executed automatically.
+    Currently supported: launch an autonomous web research topic.
+    """
+    settings = get_settings()
+    if not has_web_search(settings):
+        raise HTTPException(
+            status_code=400,
+            detail="Web search is not configured. Add SERPER_API_KEY to your .env file.",
+        )
+
+    service = get_knowledge_audit_service()
+    try:
+        readiness = service.get_agent_readiness(agent_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    recommendation = next((item for item in readiness.recommendations if item.id == recommendation_id), None)
+    if recommendation is None:
+        raise HTTPException(status_code=404, detail="Recommendation not found")
+    if recommendation.status == "dismissed":
+        raise HTTPException(status_code=400, detail="Recommendation already dismissed")
+    if recommendation.action_type != "launch_research":
+        raise HTTPException(status_code=400, detail="This recommendation requires manual user input")
+    if not recommendation.suggested_topic:
+        raise HTTPException(status_code=400, detail="Recommendation has no research topic")
+
+    manager = get_manager()
+    background_tasks.add_task(run_agent_research, agent_id, recommendation.suggested_topic, manager.broadcast)
+    return service.mark_recommendation_applied(agent_id, recommendation_id)
 
 
 @router.get("/{agent_id}/workspace")
@@ -113,6 +303,7 @@ def update_agent_model(agent_id: str, body: AgentModelUpdate):
         raise HTTPException(status_code=404, detail="Agent not found")
     agent.model_tier = body.model_tier
     factory._save()
+    get_knowledge_audit_service().invalidate_agent(agent_id)
     return _to_response(agent)
 
 
@@ -147,9 +338,15 @@ def write_agent_skill(agent_id: str, skill_name: str, body: SkillWrite):
     agent = get_agent_factory().get_agent(agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
+    if skill_name.strip().lower() == "project_context":
+        raise HTTPException(
+            status_code=400,
+            detail="project_context is reserved for the project briefing pipeline",
+        )
     wm = get_workspace_manager()
     ws = wm.get(agent_id, agent.name, agent.title)
     path = ws.write_skill(skill_name, body.content, author=body.author or "api")
+    get_knowledge_audit_service().invalidate_agent(agent_id)
     return {"ok": True, "path": str(path), "skill_name": skill_name}
 
 
@@ -165,6 +362,7 @@ def delete_agent_skill(agent_id: str, skill_name: str):
     if not skill_path.exists():
         raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found")
     skill_path.unlink()
+    get_knowledge_audit_service().invalidate_agent(agent_id)
     return {"ok": True}
 
 
@@ -196,8 +394,6 @@ async def add_agent_knowledge(
         raise HTTPException(status_code=400, detail="Provide either a file or a url")
 
     from pathlib import Path as _Path
-    from app.core.learning import run_targeted_rebriefing
-    from app.api.websocket_manager import get_manager
     wm = get_workspace_manager()
     workspace = wm.get(agent_id, agent.name, agent.title)
 
@@ -255,6 +451,7 @@ async def add_agent_knowledge(
 
     manager = get_manager()
     background_tasks.add_task(run_targeted_rebriefing, agent_id, text, source_name, manager.broadcast)
+    get_knowledge_audit_service().invalidate_agent(agent_id)
     return {"ok": True, "source": source_name, "chars": len(text)}
 
 
@@ -265,7 +462,7 @@ async def launch_agent_research(agent_id: str, body: ResearchRequest, background
     Requires SERPER_API_KEY to be configured.
     """
     settings = get_settings()
-    if not settings.serper_api_key:
+    if not has_web_search(settings):
         raise HTTPException(
             status_code=400,
             detail="Web search is not configured. Add SERPER_API_KEY to your .env file.",
@@ -279,6 +476,7 @@ async def launch_agent_research(agent_id: str, body: ResearchRequest, background
     from app.api.websocket_manager import get_manager
     manager = get_manager()
     background_tasks.add_task(run_agent_research, agent_id, body.topic, manager.broadcast)
+    get_knowledge_audit_service().invalidate_agent(agent_id)
     return {"ok": True, "topic": body.topic}
 
 
@@ -291,4 +489,5 @@ def delete_agent(agent_id: str):
     wm = get_workspace_manager()
     wm.delete_workspace(agent_id)
     factory.delete_agent(agent_id)
+    get_knowledge_audit_service().invalidate_agent(agent_id)
     return {"ok": True}

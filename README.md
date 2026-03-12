@@ -1,195 +1,272 @@
 # AI Agent Team Orchestrator
 
-Orchestrateur d'équipe d'agents IA pour startups. Un agent Associé top-level (**Alex**) orchestre des équipes spécialisées via un chat conversationnel. Les agents ont chacun leur workspace isolé, apprennent leur domaine, et s'auto-enrichissent pendant les tâches.
+Local-first multi-agent orchestration for startup work. A top-level associate named **Alex** helps the user create teams, review plans, launch tasks, trigger learning, and inspect results through a chat-first workflow.
+
+This is not a generic chatbot. The product is built around:
+
+- explicit team structures with leads and specialists
+- per-agent isolated workspaces
+- guarded plan mode before risky execution
+- task-linked deliverables and progress logs
+- structured-output observability
+- persistent local state that survives restarts
 
 ## Stack
 
-- **Backend** : Python / FastAPI + WebSocket
-- **LLM** : Anthropic Claude (Sonnet pour les spécialistes, Opus pour Alex et les leads)
-- **Orchestration** : CrewAI v1
-- **Mémoire** : ChromaDB (vecteurs RAG) + fichiers Markdown (skills par agent)
-- **Frontend** : Next.js + Tailwind + shadcn/ui + react-flow
-- **Infra locale** : Redis
+- **Backend**: Python, FastAPI, WebSocket
+- **LLM runtime**: Anthropic Claude
+- **Task orchestration**: CrewAI
+- **Memory and retrieval**: ChromaDB + Markdown skills/files per agent
+- **Frontend**: Next.js, React, Tailwind, shadcn/ui, react-flow
+- **Local infra**: Redis
 
-## Démarrage rapide
+## Current Model Defaults
 
-### Prérequis
+Model tiers are configurable, but the current local defaults force all agents to **Sonnet** unless changed in config.
+
+- `CLAUDE_MODEL_SONNET=claude-sonnet-4-5`
+- `CLAUDE_MODEL_OPUS=claude-opus-4-5`
+- `FORCE_ALL_AGENTS_MODEL_TIER=sonnet` through app config defaults
+
+## Quick Start
+
+### Prerequisites
 
 - Python 3.12+
 - Node.js 20+
-- Redis (`brew install redis`)
-- Une clé API Anthropic
+- Redis
+- An Anthropic API key
 
 ### Configuration
 
 ```bash
 cp backend/.env.example backend/.env
-# Éditez backend/.env et ajoutez vos clés (voir Variables d'environnement)
+# Edit backend/.env and set at least ANTHROPIC_API_KEY
 ```
 
-### Lancement
+### Start Everything
 
 ```bash
 chmod +x start.sh
 ./start.sh
 ```
 
-Ou manuellement :
+`start.sh` will:
+
+- create `backend/.env` from the example if missing
+- start Redis if it is not already running
+- create the backend virtualenv if needed
+- install missing backend/frontend dependencies
+- run FastAPI on `127.0.0.1:8000`
+- run Next.js on `localhost:3000`
+
+### Manual Startup
 
 ```bash
-# Terminal 1 — Redis
+# Terminal 1
 redis-server
 
-# Terminal 2 — Backend
+# Terminal 2
 cd backend
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
-# Terminal 3 — Frontend
+# Terminal 3
 cd frontend
 npm install
 npm run dev
 ```
 
-## URLs
+## Local URLs
 
 | Service | URL |
 |---|---|
-| Frontend | http://localhost:3000 |
-| Backend API | http://localhost:8000 |
-| API Docs | http://localhost:8000/docs |
+| Frontend | [http://localhost:3000](http://localhost:3000) |
+| Backend API | [http://localhost:8000](http://localhost:8000) |
+| API Docs | [http://localhost:8000/docs](http://localhost:8000/docs) |
+
+## Product Surface
+
+- `/chat`: main Alex workspace
+- `/team`: org chart, agents, workspaces, knowledge panels
+- `/tasks`: task list, execution plans, results, deliverables
+- `/project-context`: project brief, recommendations, global readiness
+- `/usage`: token/cost monitoring and structured-output channel monitoring
+- `/team-builder`: legacy/alternate team-building surface built on the same chat shell
 
 ## Architecture
 
-```
+```text
 ai-agent-team/
 ├── backend/
 │   ├── app/
-│   │   ├── main.py                  # FastAPI app
-│   │   ├── config.py                # Settings (Pydantic)
+│   │   ├── main.py                   # FastAPI app + restart recovery
+│   │   ├── config.py                 # Pydantic settings and model defaults
 │   │   ├── api/routes/
-│   │   │   ├── chat.py              # WebSocket chat + team-builder WS
-│   │   │   ├── agents.py            # CRUD agents + workspace + knowledge + research
-│   │   │   ├── teams.py             # CRUD équipes + organigramme
-│   │   │   ├── tasks.py             # Suivi des tâches
-│   │   │   ├── documents.py         # Upload documents + brief-agents
-│   │   │   └── usage.py             # Suivi consommation tokens/coût
+│   │   │   ├── chat.py               # Alex websocket, plan mode, learning triggers
+│   │   │   ├── agents.py             # Agent APIs, workspace, knowledge readiness
+│   │   │   ├── teams.py              # Teams, recommendations, org chart, project context
+│   │   │   ├── tasks.py              # Tasks and deliverables APIs
+│   │   │   ├── documents.py          # Document upload and briefing flows
+│   │   │   └── usage.py              # Token/cost usage and structured-output stats
 │   │   ├── core/
-│   │   │   ├── agent_factory.py     # Création dynamique d'agents + workspaces
-│   │   │   ├── team_builder.py      # Session conversationnelle de création d'équipe
-│   │   │   ├── learning.py          # Phase d'apprentissage, rebriefing, recherche web
-│   │   │   ├── orchestrator.py      # Exécution CrewAI avec self-augmentation
-│   │   │   ├── workspace.py         # Gestion workspaces isolés par agent
-│   │   │   ├── document_store.py    # Upload, parsing, RAG ChromaDB
-│   │   │   └── usage_tracker.py     # Suivi tokens Anthropic
+│   │   │   ├── agent_factory.py      # Persistent agents/teams + runtime recovery
+│   │   │   ├── learning.py           # Learning, rebriefing, research, project briefing
+│   │   │   ├── orchestrator.py       # Canonical task engine and deliverables sync
+│   │   │   ├── structured_json.py    # Structured output runtime + telemetry
+│   │   │   ├── universal_plan.py     # Guarded plan state machine
+│   │   │   ├── workspace.py          # Per-agent isolated workspaces
+│   │   │   ├── document_store.py     # Upload, parsing, vector indexing
+│   │   │   └── usage_tracker.py      # Anthropic and structured-flow accounting
 │   │   ├── agents/
-│   │   │   ├── associate.py         # Alex — chat, RAG documents, actions JSON
-│   │   │   ├── base_agent.py        # Builder CrewAI agent
-│   │   │   └── specialists/         # Templates de rôles (dev, marketing, legal…)
-│   │   ├── memory/                  # ChromaDB wrapper + skills store + project context
-│   │   └── tools/                   # Outils CrewAI (web search, skill_note, git, shell…)
-│   └── data/
-│       ├── workspaces/{agent_id}/   # Workspace isolé par agent
-│       │   ├── skills/              # core_skills.md, project_context.md, notes…
-│       │   ├── downloads/           # Fichiers/URLs partagés avec l'agent
-│       │   ├── repos/               # Repos git clonés
-│       │   ├── output/              # Livrables des tâches
-│       │   └── tmp/                 # Espace temporaire
-│       ├── documents/               # Documents uploadés par l'utilisateur
-│       ├── chromadb/                # Embeddings vecteurs
-│       ├── agents.json              # Définitions agents persistées
-│       └── teams.json               # Définitions équipes persistées
+│   │   │   ├── associate.py          # Alex chat logic + typed actions
+│   │   │   ├── base_agent.py         # CrewAI agent builder
+│   │   │   └── specialists/          # Role templates
+│   │   ├── memory/                   # Project context, skills, vector store
+│   │   ├── models/                   # Typed backend contracts
+│   │   └── tools/                    # Agent tools
+│   └── data/                         # Local persistent state
+├── data/                             # Root-level local state in some dev flows
+├── docs/
+│   └── llm/                          # LLM strategy and coding-agent docs
 └── frontend/
-    ├── app/
-    │   ├── page.tsx                 # Dashboard
-    │   ├── chat/                    # Chat avec Alex (mode création d'équipe inclus)
-    │   ├── team/                    # Équipe — organigramme + workspace par agent
-    │   └── tasks/                   # Suivi des tâches
-    └── components/
-        ├── chat/ChatPanel.tsx       # Chat, documents @mention, plan mode
-        ├── agents/WorkspacePanel.tsx # Skills, Knowledge (upload/URL/recherche web)
-        └── organigramme/OrgChart.tsx # Arbre interactif cliquable
+    ├── app/                          # Next.js routes
+    ├── components/chat/              # Alex shell, plan UI, team-builder UI
+    ├── components/agents/            # Agent workspace UI
+    ├── components/tasks/             # Task result and deliverable UI
+    └── components/project-context/   # Recommendations and readiness UI
 ```
 
-## Flux principaux
+## Main Workflows
 
-### 1. Construction d'équipe
+### 1. Alex Chat and Universal Plan Mode
 
-La création d'équipe se fait **entièrement dans le chat avec Alex** — pas de page dédiée.
+Alex can:
 
-1. L'utilisateur décrit son projet et ses besoins à Alex
-2. Alex conçoit la structure d'équipe (rôles, spécialisations, niveaux de modèle)
-3. Alex génère l'action `create_team_direct` → l'équipe est créée immédiatement
-4. Chaque agent passe par une **phase d'apprentissage** automatique :
-   - Claude génère `core_skills.md` (expertise métier) et `project_context.md` (contexte projet)
-   - Chaque fichier est écrit dans le workspace isolé de l'agent
-5. L'organigramme s'affiche dans **Mon Équipe**
+- answer directly
+- ask for structured information with dynamic forms
+- propose a **task plan** or **team plan**
+- request targeted clarifications before confirmation
+- trigger learning for existing agents
 
-### 2. Enrichissement du knowledge des agents
+Plan mode is no longer just prose. Drafts now include structured validation metadata such as:
 
-Trois façons d'enrichir le contexte d'un agent :
+- `validation_issues`
+- `validation_status`
+- `execution_eligibility`
 
-**a) Document/URL global** (panel Documents dans le chat)
-- Uploader un PDF, DOCX, TXT… → indexé en ChromaDB pour le RAG d'Alex
-- Cliquer 📖 → met à jour le `project_context.md` de **tous** les agents
+Confirmation is only allowed when the backend explicitly marks the draft as eligible.
 
-**b) Partage ciblé par agent** (onglet Knowledge dans le workspace d'un agent)
-- Upload fichier ou coller une URL → sauvegardé dans `workspace/downloads/`
-- Génère une mise à jour ciblée du `project_context.md` de cet agent uniquement
+### 2. Team Creation and Agent Learning
 
-**c) Recherche web autonome** (onglet Knowledge → Recherche web)
-- Saisir un sujet → l'agent effectue 3–5 recherches Google (via Serper)
-- Synthèse sauvegardée dans `workspace/skills/research_*.md`
-- Nécessite `SERPER_API_KEY`
+Teams can be created:
 
-### 3. Exécution de tâche avec self-augmentation
+- through Alex and plan mode
+- through team recommendations in the project context UI
+- from templates or custom team APIs
 
-1. L'utilisateur soumet une tâche à Alex (chat ou `/tasks`)
-2. Alex délègue à la bonne équipe via l'action `create_task`
-3. CrewAI orchestre les agents avec leurs skills comme backstory
-4. **Si** l'agent fait une recherche externe et trouve quelque chose de nouveau → `skill_note` ajoute une note datée sans écraser les skills existants
-5. Au-delà de 5 000 chars, consolidation automatique via Claude (déduplication)
-6. Les résultats remontent en temps réel via WebSocket
+New agents are created with isolated workspaces and are expected to run an automatic learning phase that writes:
 
-### 4. Plan mode et formulaires dynamiques
+- `core_skills`
+- `project_context`
+- profile/output files in the agent workspace
 
-Quand Alex (ou le team builder) a besoin d'infos structurées, il peut retourner un bloc `gather_info` :
+Existing agents can also be re-initialized through Alex via the learning trigger flow.
 
-```json
-{"action": "gather_info", "title": "...", "fields": [...]}
-```
+### 3. Knowledge and Context Enrichment
 
-Le frontend affiche un **formulaire dynamique** inline (texte, textarea, sélecteur). Les réponses sont renvoyées à Alex comme message structuré.
+There are several complementary knowledge paths:
 
-## Variables d'environnement
+- **global project context** shared across the product
+- **uploaded documents** indexed for Alex and project-wide context
+- **agent-specific downloads and notes** in each workspace
+- **knowledge readiness audits** with structured recommendations
+- **web research flows** that can write reusable research notes
 
-| Variable | Description | Requis |
+The project context and recommendations surfaces also expose the real structured generation channel used by backend flows.
+
+### 4. Task Execution
+
+Tasks can come from Alex or direct task APIs. The canonical task engine:
+
+- builds an explicit execution plan
+- runs nodes with tracked status and dependencies
+- records progress logs
+- stores deliverables under a task-linked directory
+- keeps sources, assumptions, and warnings
+
+Task execution is guarded. Non-eligible tasks are blocked before execution rather than failing late.
+
+### 5. Observability
+
+The app includes dedicated observability for:
+
+- token and cost usage
+- model split
+- structured-output success/failure by flow
+- structured generation channel by flow
+- task progress entries with structured flow/channel metadata
+
+The main UI for this is `/usage`.
+
+## Environment Variables
+
+| Variable | Description | Required |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Clé API Anthropic | ✅ |
-| `REDIS_URL` | URL Redis | `redis://localhost:6379` |
-| `CLAUDE_MODEL_SONNET` | Modèle spécialistes | `claude-sonnet-4-5` |
-| `CLAUDE_MODEL_OPUS` | Modèle Alex + leads | `claude-opus-4-5` |
-| `CHROMA_PERSIST_DIR` | Dossier ChromaDB | `./data/chromadb` |
-| `SERPER_API_KEY` | Recherche Google pour agents (serper.dev — gratuit 2500/mois) | Optionnel |
-| `GITHUB_TOKEN` | GitHub API search (clone SSH fonctionne sans) | Optionnel |
+| `ANTHROPIC_API_KEY` | Anthropic API key | Yes |
+| `REDIS_URL` | Redis connection string | No |
+| `CLAUDE_MODEL_SONNET` | Sonnet model name | No |
+| `CLAUDE_MODEL_OPUS` | Opus model name | No |
+| `CHROMA_PERSIST_DIR` | ChromaDB storage path | No |
+| `SERPER_API_KEY` | Web search for research flows | Optional |
+| `GITHUB_TOKEN` | GitHub API access for some tooling | Optional |
 
-## Vérification rapide
+## Useful Local State
+
+Be careful with local data. This project often runs with meaningful persisted state already present.
+
+Important locations include:
+
+- `backend/data/agents.json`
+- `backend/data/teams.json`
+- `backend/data/tasks.json`
+- `backend/data/workspaces/`
+- `backend/data/task_deliverables/`
+- `backend/data/documents/`
+- `backend/data/knowledge_readiness/`
+- `backend/data/usage.json`
+
+## Validation Commands
 
 ```bash
-# Backend up ?
+# Health
 curl http://localhost:8000/health
 
-# Agents et équipes
+# Core API lists
 curl http://localhost:8000/api/agents/
 curl http://localhost:8000/api/teams/
+curl http://localhost:8000/api/tasks/
 
-# Web search active ?
-curl http://localhost:8000/api/agents/capabilities
+# Usage and structured-output observability
+curl http://localhost:8000/api/usage/
 
-# Upload d'un document
-curl -F "file=@README.md" http://localhost:8000/api/documents/
+# Recommendations and readiness
+curl http://localhost:8000/api/teams/recommendations
+curl http://localhost:8000/api/agents/readiness/global
+```
 
-# Brief tous les agents avec un doc
-curl -X POST http://localhost:8000/api/documents/{doc_id}/brief-agents
+### Common Test Commands
+
+```bash
+python3 -m pytest backend/tests/test_universal_plan.py
+python3 -m pytest backend/tests/test_task_orchestration.py
+python3 -m pytest backend/tests/test_structured_json.py
+python3 -m pytest backend/tests/test_knowledge_recommendations.py
+python3 -m pytest backend/tests/test_smoke.py
+
+cd frontend
+npm run test
+npm run build
 ```

@@ -14,7 +14,7 @@ import {
   type Edge,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { api, type OrgNode, type AgentStatus } from "@/lib/api";
+import { api, type OrgNode, type AgentOccupancyStatus, type AgentStatus } from "@/lib/api";
 import { Loader2 } from "lucide-react";
 import { useState } from "react";
 
@@ -43,59 +43,94 @@ function flattenNodes(nodes: OrgNode[], parentId: string | null = null): FlatNod
   ]);
 }
 
-function buildLayout(flat: FlatNode[]): { nodes: Node[]; edges: Edge[] } {
-  const levelMap: Record<string, number> = {};
-  const parentMap: Record<string, string | null> = {};
-  flat.forEach((n) => (parentMap[n.id] = n.parent_id));
+const NODE_WIDTH = 220;
+const LEVEL_HEIGHT = 180;
+const SIBLING_GAP = 36;
+const ROOT_GAP = 84;
 
-  function getLevel(id: string): number {
-    if (levelMap[id] !== undefined) return levelMap[id];
-    const parent = parentMap[id];
-    const level = parent ? getLevel(parent) + 1 : 0;
-    levelMap[id] = level;
-    return level;
+function buildLayout(tree: OrgNode[]): { nodes: Node[]; edges: Edge[] } {
+  const flat = flattenNodes(tree);
+  const flatById = Object.fromEntries(flat.map((node) => [node.id, node]));
+  const nodes: Node[] = [];
+  const edges: Edge[] = [];
+
+  function subtreeWidth(node: OrgNode): number {
+    if (node.children.length === 0) return NODE_WIDTH;
+    const childrenWidth = node.children.reduce((sum, child, index) => {
+      const gap = index === 0 ? 0 : SIBLING_GAP;
+      return sum + gap + subtreeWidth(child);
+    }, 0);
+    return Math.max(NODE_WIDTH, childrenWidth);
   }
-  flat.forEach((n) => getLevel(n.id));
 
-  const levelGroups: Record<number, FlatNode[]> = {};
-  flat.forEach((n) => {
-    const l = levelMap[n.id];
-    if (!levelGroups[l]) levelGroups[l] = [];
-    levelGroups[l].push(n);
-  });
+  function placeNode(node: OrgNode, left: number, level: number): number {
+    const width = subtreeWidth(node);
+    const centerX = left + width / 2;
 
-  const nodes: Node[] = flat.map((n) => {
-    const level = levelMap[n.id];
-    const siblings = levelGroups[level];
-    const idx = siblings.findIndex((s) => s.id === n.id);
-    const totalWidth = siblings.length * 220;
-    const x = idx * 220 - totalWidth / 2 + 110;
-    const y = level * 180;
-
-    return {
-      id: n.id,
-      position: { x, y },
-      data: { label: n.name, title: n.title, role: n.role, status: n.status, model_tier: (n as OrgNode & { model_tier?: string }).model_tier },
+    nodes.push({
+      id: node.id,
+      position: { x: centerX - NODE_WIDTH / 2, y: level * LEVEL_HEIGHT },
+      data: {
+        label: node.name,
+        title: node.title,
+        role: node.role,
+        status: node.status,
+        occupancy_status: node.occupancy_status,
+        current_task_title: node.current_task_title,
+        model_tier: (flatById[node.id] as OrgNode & { model_tier?: string } | undefined)?.model_tier,
+      },
       type: "agentNode",
       sourcePosition: Position.Bottom,
       targetPosition: Position.Top,
-    };
-  });
+    });
 
-  const edges: Edge[] = flat
-    .filter((n) => n.parent_id && flat.some((p) => p.id === n.parent_id))
-    .map((n) => ({
-      id: `e-${n.parent_id}-${n.id}`,
-      source: n.parent_id!,
-      target: n.id,
-      type: "smoothstep",
-      style: { stroke: "#cbd5e1", strokeWidth: 2 },
-    }));
+    let cursor = left;
+    node.children.forEach((child) => {
+      const childWidth = subtreeWidth(child);
+      placeNode(child, cursor, level + 1);
+      edges.push({
+        id: `e-${node.id}-${child.id}`,
+        source: node.id,
+        target: child.id,
+        type: "smoothstep",
+        style: { stroke: "#cbd5e1", strokeWidth: 2 },
+      });
+      cursor += childWidth + SIBLING_GAP;
+    });
+
+    return width;
+  }
+
+  let cursor = 0;
+  tree.forEach((root, index) => {
+    const width = subtreeWidth(root);
+    placeNode(root, cursor, 0);
+    cursor += width + (index === tree.length - 1 ? 0 : ROOT_GAP);
+  });
 
   return { nodes, edges };
 }
 
-function AgentNode({ data }: { data: { label: string; title: string; role: string; status: AgentStatus; model_tier?: string } }) {
+function AgentNode({
+  data,
+}: {
+  data: {
+    label: string;
+    title: string;
+    role: string;
+    status: AgentStatus;
+    occupancy_status: AgentOccupancyStatus;
+    current_task_title: string | null;
+    model_tier?: string;
+  };
+}) {
+  const occupancyLabel =
+    data.occupancy_status === "busy"
+      ? "Busy"
+      : data.occupancy_status === "assigned"
+        ? "Assigned"
+        : null;
+
   return (
     <>
       <Handle
@@ -144,12 +179,27 @@ function AgentNode({ data }: { data: { label: string; title: string; role: strin
               background: STATUS_COLORS[data.status] ?? "#94a3b8",
             }}
           />
+          {occupancyLabel && (
+            <span
+              style={{
+                fontSize: 9,
+                color: data.occupancy_status === "busy" ? "#1d4ed8" : "#7c3aed",
+                fontWeight: 600,
+                letterSpacing: "0.03em",
+              }}
+            >
+              {occupancyLabel}
+            </span>
+          )}
           {data.model_tier === "opus" && (
             <span style={{ fontSize: 9, color: "#7c3aed", fontWeight: 600, letterSpacing: "0.05em" }}>
               OPUS
             </span>
           )}
         </div>
+        {data.current_task_title && (
+          <div style={{ marginTop: 6, fontSize: 10, color: "#475569" }}>{data.current_task_title}</div>
+        )}
       </div>
       <Handle
         type="source"
@@ -176,12 +226,11 @@ export function OrgChart({ onAgentClick, refreshKey }: OrgChartProps) {
   const load = useCallback(async () => {
     try {
       const orgNodes = await api.getOrganigramme();
-      const flat = flattenNodes(orgNodes);
-      if (flat.length === 0) {
+      if (orgNodes.length === 0) {
         setLoading(false);
         return;
       }
-      const { nodes: n, edges: e } = buildLayout(flat);
+      const { nodes: n, edges: e } = buildLayout(orgNodes);
       setNodes(n);
       setEdges(e);
     } catch {
@@ -215,9 +264,9 @@ export function OrgChart({ onAgentClick, refreshKey }: OrgChartProps) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-center p-8">
         <div className="text-6xl mb-4">🏗️</div>
-        <h3 className="text-lg font-semibold text-slate-700 mb-2">Aucune équipe créée</h3>
+        <h3 className="text-lg font-semibold text-slate-700 mb-2">No team created</h3>
         <p className="text-sm text-slate-500">
-          Parlez à Alex dans le chat pour construire votre équipe d&apos;agents.
+          Talk to Alex in chat to build your agent team.
         </p>
       </div>
     );

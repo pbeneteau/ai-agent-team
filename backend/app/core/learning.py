@@ -4,92 +4,321 @@ Each agent researches its domain, learns the project context,
 writes its skills as Markdown files, and sets up its workspace.
 """
 import asyncio
+import json
 import logging
+import re
+from datetime import UTC, datetime
 from anthropic import AsyncAnthropic
+from pydantic import BaseModel, Field
 
-from app.config import get_settings
-from app.models.agent import AgentConfig, AgentStatus
+from app.config import get_settings, has_web_search
+from app.config.prompts import (
+    DOCUMENT_REBRIEFING_PROMPT,
+    LEARNING_SYSTEM_PROMPT,
+    LEARN_FROM_WORK_PROMPT,
+    LEARN_FROM_WORK_SCHEMA_HINT,
+    PROJECT_BRIEFING_PROMPT,
+    TARGETED_REBRIEFING_PROMPT,
+)
+from app.config.token_budgets import (
+    PROJECT_CONTEXT_BRIEFING_MAX_TOKENS,
+    WORK_LEARNINGS_EXISTING_BUDGET,
+    WORK_LEARNINGS_RESULT_BUDGET,
+)
+from app.core.knowledge import get_knowledge_audit_service
+from app.core.project_brief import render_project_brief_summary
+from app.core.structured_json import StructuredJsonError, request_structured_json_async
+from app.core.workspace import get_workspace_manager
+from app.models.agent import (
+    AgentConfig,
+    AgentOccupancyReason,
+    AgentOccupancyStatus,
+    AgentStatus,
+    build_agent_status_payload,
+)
 from app.core.agent_factory import get_agent_factory
-from app.memory.skills_store import get_skills_store
 from app.memory.project_context import get_project_context_store
 from app.core.usage_tracker import get_usage_tracker
+from app.models.task import TaskExecutionNode, TaskResponse
+from app.tools.registry import consolidate_skill_content
 
 logger = logging.getLogger(__name__)
 
-LEARNING_SYSTEM_PROMPT = """You are {agent_name}, a {agent_title} in an AI agent team.
 
-## About the project
-{project_context}
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat()
 
-## Your workspace
-{workspace_path}
 
-## Your task
-Write TWO Markdown documents:
+async def _broadcast_agent_status(agent_id: str, broadcast_callback=None):
+    if not broadcast_callback:
+        return
+    agent = get_agent_factory().get_agent(agent_id)
+    if not agent:
+        return
+    await broadcast_callback({"type": "agent_status", "data": build_agent_status_payload(agent)})
 
-### Document 1 — core_skills.md
-Your professional expertise, independent of any specific project:
-1. Core methodologies and frameworks you rely on
-2. Decision-making approach and mental models
-3. Best practices you always apply
-4. Tools and technologies you master
-5. How you collaborate and communicate with teammates
-6. Key metrics and KPIs you track
-7. How you use your workspace (downloads/, repos/, output/, tmp/, skills/)
+WORK_LEARNINGS_SKILL = "work_learnings"
+_WORK_LEARNINGS_MAX_INSIGHTS_PER_NODE = 3
+_WORK_LEARNINGS_MAX_CAUTIONS_PER_NODE = 2
+_WORK_LEARNINGS_MAX_INSIGHT_ITEMS = 18
+_WORK_LEARNINGS_MAX_CAUTION_ITEMS = 12
+_WORK_LEARNINGS_ITEM_MAX_CHARS = 280
+_WORK_LEARNINGS_CONSOLIDATE_AT = 4200
+_WORK_LEARNINGS_MAX_CHARS = 5000
 
-### Document 2 — project_context.md
-What YOU specifically need to know about this project to do your job well.
-Translate the project description into YOUR domain language:
-- As a developer: tech stack choices, architecture decisions, code conventions, third-party services
-- As a marketer: target audience profile, brand voice, competitors, channels, messaging pillars
-- As a PM: delivery methodology, priorities framework, definition of done, team rituals
-- As a finance analyst: business model, revenue streams, cost structure, key financial KPIs
-- As a designer: design principles, target users, accessibility requirements, toolchain
 
-Only include what is directly relevant to your specialization.
-Exclude anything that belongs to another domain.
-If information is missing, flag it as "TBD — needs clarification from the user."
+class _WorkLearningsPayload(BaseModel):
+    insights: list[str] = Field(default_factory=list)
+    cautions: list[str] = Field(default_factory=list)
 
-Be concise and actionable. These files are your permanent reference — you will read them before every task."""
 
-PROJECT_BRIEFING_PROMPT = """You are Alex, the AI Associate. A new team has been created and you must now write
-domain-scoped project context files for each agent in their workspace.
+def _strip_skill_header(content: str) -> str:
+    stripped = (content or "").lstrip()
+    if not stripped.startswith("<!--"):
+        return content or ""
+    end = stripped.find("-->")
+    if end == -1:
+        return content or ""
+    return stripped[end + 3:].lstrip()
 
-## Project description provided by the user:
-{project_context}
 
-## Team members and their domains:
-{team_members}
+def _sanitize_work_learning_item(item: str) -> str:
+    text = re.sub(r"\s+", " ", str(item or "")).strip()
+    text = text.lstrip("-*• ").strip()
+    if ":" in text:
+        prefix, remainder = text.split(":", 1)
+        if prefix.strip().lower() in {"insight", "caution"}:
+            text = remainder.strip()
+    return text[:_WORK_LEARNINGS_ITEM_MAX_CHARS].strip()
 
-For each agent, write a focused project_context.md file that contains ONLY what that agent
-needs to know to do their job on this specific project.
 
-Keep each file under 400 words. Be precise, avoid fluff.
-Organize by agent in your response using this format:
+def _normalize_work_learning_item(item: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", item.lower()).strip()
 
----AGENT:{{agent_id}}---
-(markdown content here)
----END---
 
-Repeat for each agent. Do not include agents outside the list above."""
+def _merge_work_learning_items(existing: list[str], incoming: list[str], limit: int) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    incoming_items = [_sanitize_work_learning_item(candidate) for candidate in incoming]
+
+    for item in incoming_items + existing:
+        normalized = _normalize_work_learning_item(item)
+        if len(item) < 12 or not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        merged.append(item)
+        if len(merged) >= limit:
+            break
+
+    return merged
+
+
+def _parse_work_learnings(content: str) -> tuple[list[str], list[str]]:
+    insights: list[str] = []
+    cautions: list[str] = []
+    current_section = "insights"
+    in_comment_block = False
+
+    for raw_line in _strip_skill_header(content).splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("<!--"):
+            in_comment_block = True
+        if in_comment_block:
+            if "-->" in line:
+                in_comment_block = False
+            continue
+
+        lower = line.lower()
+        if lower.startswith("## "):
+            if "verified reusable insights" in lower:
+                current_section = "insights"
+            elif "reusable cautions" in lower:
+                current_section = "cautions"
+            else:
+                current_section = "insights"
+            continue
+
+        if not line.startswith(("-", "*", "•")):
+            continue
+
+        item = line.lstrip("-*• ").strip()
+        target = current_section
+        if item.lower().startswith("caution:"):
+            target = "cautions"
+        elif item.lower().startswith("insight:"):
+            target = "insights"
+
+        sanitized = _sanitize_work_learning_item(item)
+        if not sanitized:
+            continue
+
+        if target == "cautions":
+            cautions.append(sanitized)
+        else:
+            insights.append(sanitized)
+
+    return insights, cautions
+
+
+def _format_work_learnings(insights: list[str], cautions: list[str]) -> str:
+    parts = [
+        "# Work Learnings",
+        "",
+        "Durable, role-specific learnings extracted from completed work.",
+        "",
+        "## Verified reusable insights",
+    ]
+    if insights:
+        parts.extend(f"- {item}" for item in insights)
+    else:
+        parts.append("No durable insights captured yet.")
+
+    parts.extend([
+        "",
+        "## Reusable cautions",
+    ])
+    if cautions:
+        parts.extend(f"- {item}" for item in cautions)
+    else:
+        parts.append("No reusable cautions captured yet.")
+
+    return "\n".join(parts).strip() + "\n"
+
+
+def _compact_work_learnings_content(insights: list[str], cautions: list[str], workspace_path: str) -> str:
+    content = _format_work_learnings(insights, cautions)
+    if len(content) > _WORK_LEARNINGS_CONSOLIDATE_AT:
+        consolidated = consolidate_skill_content(WORK_LEARNINGS_SKILL, content, workspace_path)
+        if consolidated:
+            reparsed_insights, reparsed_cautions = _parse_work_learnings(consolidated)
+            insights = _merge_work_learning_items([], reparsed_insights, _WORK_LEARNINGS_MAX_INSIGHT_ITEMS)
+            cautions = _merge_work_learning_items([], reparsed_cautions, _WORK_LEARNINGS_MAX_CAUTION_ITEMS)
+            content = _format_work_learnings(insights, cautions)
+
+    while len(content) > _WORK_LEARNINGS_MAX_CHARS and (len(insights) > 1 or len(cautions) > 1):
+        if len(insights) >= len(cautions) and len(insights) > 1:
+            insights = insights[:-1]
+        elif len(cautions) > 1:
+            cautions = cautions[:-1]
+        else:
+            insights = insights[:-1]
+        content = _format_work_learnings(insights, cautions)
+
+    return content
+
+
+async def run_learn_from_work(
+    agent: AgentConfig,
+    task: TaskResponse,
+    node: TaskExecutionNode,
+    broadcast_callback=None,
+) -> bool:
+    if not (node.result or "").strip():
+        return False
+
+    settings = get_settings()
+    if not settings.anthropic_api_key:
+        return False
+
+    workspace = get_workspace_manager().get(agent.id, agent.name, agent.title)
+    existing_content = workspace.read_skill(WORK_LEARNINGS_SKILL) or ""
+
+    prompt = LEARN_FROM_WORK_PROMPT.format(
+        agent_name=agent.name,
+        agent_title=agent.title,
+        agent_specialization=agent.specialization,
+        task_title=task.title,
+        task_description=task.description.strip()[:1200],
+        node_title=node.title,
+        node_description=node.description.strip()[:1200],
+        node_result=(node.result or "").strip()[:WORK_LEARNINGS_RESULT_BUDGET],
+        sources="\n".join(f"- {source}" for source in node.sources[:8]) or "- None",
+        assumptions="\n".join(f"- {assumption}" for assumption in node.assumptions[:6]) or "- None",
+        warnings="\n".join(f"- {warning}" for warning in node.warnings[:6]) or "- None",
+        existing_work_learnings=_strip_skill_header(existing_content)[:WORK_LEARNINGS_EXISTING_BUDGET] or "None yet.",
+    )
+
+    try:
+        client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        structured = await request_structured_json_async(
+            client=client,
+            model=settings.claude_model,
+            prompt=prompt,
+            response_model=_WorkLearningsPayload,
+            schema_hint=LEARN_FROM_WORK_SCHEMA_HINT,
+            max_tokens=700,
+            repair_max_tokens=500,
+            request_name=f"learn_from_work:{agent.id}:{node.id}",
+        )
+        payload = structured.value.model_dump(mode="json")
+    except StructuredJsonError as exc:
+        logger.warning(
+            "Learn-from-work synthesis failed for %s on node %s: %s (preview=%r, parse_error=%s, repair_error=%s)",
+            agent.name,
+            node.id,
+            exc,
+            exc.telemetry.raw_preview,
+            exc.telemetry.parse_error,
+            exc.telemetry.repair_error,
+        )
+        return False
+    except Exception as exc:
+        logger.warning("Learn-from-work synthesis failed for %s on node %s: %s", agent.name, node.id, exc)
+        return False
+
+    raw_insights = payload.get("insights") if isinstance(payload.get("insights"), list) else []
+    raw_cautions = payload.get("cautions") if isinstance(payload.get("cautions"), list) else []
+    new_insights = _merge_work_learning_items([], [str(item) for item in raw_insights], _WORK_LEARNINGS_MAX_INSIGHTS_PER_NODE)
+    new_cautions = _merge_work_learning_items([], [str(item) for item in raw_cautions], _WORK_LEARNINGS_MAX_CAUTIONS_PER_NODE)
+    if not new_insights and not new_cautions:
+        return False
+
+    existing_insights, existing_cautions = _parse_work_learnings(existing_content)
+    merged_insights = _merge_work_learning_items(
+        existing_insights,
+        new_insights,
+        _WORK_LEARNINGS_MAX_INSIGHT_ITEMS,
+    )
+    merged_cautions = _merge_work_learning_items(
+        existing_cautions,
+        new_cautions,
+        _WORK_LEARNINGS_MAX_CAUTION_ITEMS,
+    )
+    final_content = _compact_work_learnings_content(merged_insights, merged_cautions, str(workspace.root))
+    workspace.write_skill(WORK_LEARNINGS_SKILL, final_content, author=f"learn_from_work:{node.id}")
+    get_knowledge_audit_service().invalidate_agent(agent.id)
+    logger.info(
+        "Work learnings updated for %s: +%s insight(s), +%s caution(s)",
+        agent.name,
+        len(new_insights),
+        len(new_cautions),
+    )
+    return True
 
 
 def _build_project_summary(ctx: dict) -> str:
-    parts = [
-        f"Project: {ctx.get('name', 'Unknown')}",
-        f"Description: {ctx.get('description', 'No description provided yet.')}",
-    ]
-    if ctx.get("domain"):
-        parts.append(f"Domain: {ctx['domain']}")
-    if ctx.get("tech_stack"):
-        parts.append(f"Tech stack: {ctx['tech_stack']}")
-    if ctx.get("target_audience"):
-        parts.append(f"Target audience: {ctx['target_audience']}")
-    if ctx.get("business_model"):
-        parts.append(f"Business model: {ctx['business_model']}")
-    if ctx.get("notes"):
-        parts.append(f"Additional context: {ctx['notes']}")
-    return "\n".join(parts)
+    return render_project_brief_summary(ctx, include_meta=True)
+
+
+def _project_context_skill_metadata(ctx_store) -> dict[str, str]:
+    active_brief = ctx_store.get_active_brief()
+    metadata = {"projection": "role_brief"}
+    if not active_brief:
+        return metadata
+    metadata["brief_revision"] = str(active_brief.revision)
+    metadata["brief_fingerprint"] = active_brief.brief_fingerprint
+    return metadata
+
+
+def _write_project_context_projection(workspace, ctx_store, content: str, *, author: str) -> None:
+    workspace.write_skill(
+        "project_context",
+        content,
+        author=author,
+        metadata=_project_context_skill_metadata(ctx_store),
+    )
 
 
 async def run_learning_phase(agent: AgentConfig, broadcast_callback=None) -> bool:
@@ -98,11 +327,14 @@ async def run_learning_phase(agent: AgentConfig, broadcast_callback=None) -> boo
     ctx_store = get_project_context_store()
 
     factory.update_agent_status(agent.id, AgentStatus.LEARNING)
-    if broadcast_callback:
-        await broadcast_callback({
-            "type": "agent_status",
-            "data": {"agent_id": agent.id, "status": "learning", "name": agent.name},
-        })
+    factory.update_agent_occupancy(
+        agent.id,
+        occupancy_status=AgentOccupancyStatus.BUSY,
+        occupancy_reason=AgentOccupancyReason.LEARNING,
+        current_task_title="Phase d'apprentissage",
+        busy_since=_now_iso(),
+    )
+    await _broadcast_agent_status(agent.id, broadcast_callback)
 
     try:
         from app.core.workspace import get_workspace_manager
@@ -113,6 +345,14 @@ async def run_learning_phase(agent: AgentConfig, broadcast_callback=None) -> boo
         project_ctx = ctx_store.load_context() or {}
         project_summary = _build_project_summary(project_ctx)
 
+        # Use the agent's actual model tier for learning: leads get Opus, specialists get Sonnet
+        from app.models.agent import ModelTier
+        learning_model = (
+            settings.claude_model_opus
+            if agent.model_tier == ModelTier.OPUS
+            else settings.claude_model
+        )
+
         client = AsyncAnthropic(api_key=settings.anthropic_api_key)
         system_prompt = LEARNING_SYSTEM_PROMPT.format(
             agent_name=agent.name,
@@ -122,7 +362,7 @@ async def run_learning_phase(agent: AgentConfig, broadcast_callback=None) -> boo
         )
 
         response = await client.messages.create(
-            model=settings.claude_model,
+            model=learning_model,
             max_tokens=4096,
             system=system_prompt,
             messages=[{
@@ -138,13 +378,18 @@ async def run_learning_phase(agent: AgentConfig, broadcast_callback=None) -> boo
             }],
         )
 
-        get_usage_tracker().log(settings.claude_model, response.usage.input_tokens, response.usage.output_tokens)
+        get_usage_tracker().log(learning_model, response.usage.input_tokens, response.usage.output_tokens)
         raw = response.content[0].text
         # Split the two documents
         core_skills_content, project_ctx_content = _split_learning_output(raw)
 
         workspace.write_skill("core_skills", core_skills_content, author="learning_phase")
-        workspace.write_skill("project_context", project_ctx_content, author="learning_phase")
+        _write_project_context_projection(
+            workspace,
+            ctx_store,
+            project_ctx_content,
+            author="learning_phase",
+        )
         workspace.write_profile({
             "id": agent.id,
             "name": agent.name,
@@ -169,29 +414,19 @@ async def run_learning_phase(agent: AgentConfig, broadcast_callback=None) -> boo
             doc_id=f"agent_{agent.id}",
             metadata={"type": "agent", "agent_id": agent.id, "title": agent.title},
         )
+        get_knowledge_audit_service().invalidate_agent(agent.id)
 
         factory.update_agent_status(agent.id, AgentStatus.READY)
-        if broadcast_callback:
-            await broadcast_callback({
-                "type": "agent_status",
-                "data": {
-                    "agent_id": agent.id,
-                    "status": "ready",
-                    "name": agent.name,
-                    "workspace_path": workspace_path,
-                },
-            })
+        factory.clear_agent_occupancy(agent.id)
+        await _broadcast_agent_status(agent.id, broadcast_callback)
         logger.info(f"Agent {agent.name} learning complete — workspace: {workspace_path}")
         return True
 
     except Exception as e:
         logger.exception(f"Learning phase failed for {agent.name}: {e}")
         factory.update_agent_status(agent.id, AgentStatus.ERROR)
-        if broadcast_callback:
-            await broadcast_callback({
-                "type": "agent_status",
-                "data": {"agent_id": agent.id, "status": "error", "name": agent.name, "error": str(e)},
-            })
+        factory.clear_agent_occupancy(agent.id)
+        await _broadcast_agent_status(agent.id, broadcast_callback)
         return False
 
 
@@ -216,6 +451,74 @@ def _split_learning_output(raw: str) -> tuple[str, str]:
     return core, project
 
 
+def _build_role_project_context_prompt(
+    *,
+    agent: AgentConfig,
+    project_summary: str,
+    source_name: str | None = None,
+    source_text: str | None = None,
+) -> str:
+    source_block = ""
+    if source_name and source_text:
+        source_block = (
+            f'\n## Additional source: "{source_name}"\n'
+            f"{source_text[:12000]}\n"
+            "- Use this source only where it adds role-relevant detail.\n"
+            f'- Cite any number copied from it with "(Source: {source_name})".\n'
+            "- If it conflicts with the shared brief, prefer the newer source but mention the uncertainty.\n"
+        )
+    return f"""You are {agent.name}, a {agent.title} in an AI agent team.
+
+## Shared project brief
+{project_summary}
+{source_block}
+## Your task
+Write the full content of `project_context.md` for YOUR role only.
+
+Rules:
+- Focus only on what matters to a {agent.title}
+- Prefer short sections and bullets over paragraphs
+- Keep only execution-relevant context; cut background fluff
+- Separate clearly:
+  - Confirmed context
+  - Role-specific implications
+  - TBD / open questions
+- Flag missing information as `TBD — needs verification`
+- Do NOT invent numbers, market data, competitor details or projections
+- Keep the file under 450 words
+
+Write only the Markdown content. No preamble."""
+
+
+async def _generate_role_project_context(
+    *,
+    client: AsyncAnthropic,
+    model: str,
+    agent: AgentConfig,
+    project_summary: str,
+    source_name: str | None = None,
+    source_text: str | None = None,
+) -> str:
+    prompt = _build_role_project_context_prompt(
+        agent=agent,
+        project_summary=project_summary,
+        source_name=source_name,
+        source_text=source_text,
+    )
+    response = await client.messages.create(
+        model=model,
+        max_tokens=PROJECT_CONTEXT_BRIEFING_MAX_TOKENS,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    get_usage_tracker().log(model, response.usage.input_tokens, response.usage.output_tokens)
+    parts: list[str] = []
+    for block in getattr(response, "content", []) or []:
+        text = getattr(block, "text", None)
+        if text:
+            parts.append(text)
+    return "".join(parts).strip()
+
+
 async def run_project_briefing(team_id: str, broadcast_callback=None):
     """
     After the user provides rich project context, Alex writes a domain-scoped
@@ -236,99 +539,39 @@ async def run_project_briefing(team_id: str, broadcast_callback=None):
         return
 
     project_summary = _build_project_summary(project_ctx)
-    team_members = "\n".join(
-        f"- {a.name} (id: {a.id}) — {a.title}, specialization: {a.specialization}"
-        for a in agents
-    )
-
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-    response = await client.messages.create(
-        model=settings.claude_model_opus,
-        max_tokens=4096,
-        messages=[{
-            "role": "user",
-            "content": PROJECT_BRIEFING_PROMPT.format(
-                project_context=project_summary,
-                team_members=team_members,
-            ),
-        }],
-    )
-
-    get_usage_tracker().log(settings.claude_model_opus, response.usage.input_tokens, response.usage.output_tokens)
-    raw = response.content[0].text
-    _distribute_briefing(raw, agents, factory)
+    updated = 0
+    for agent in agents:
+        try:
+            content = await _generate_role_project_context(
+                client=client,
+                model=settings.claude_model,
+                agent=agent,
+                project_summary=project_summary,
+            )
+        except Exception as exc:
+            logger.exception("Project briefing generation failed for %s: %s", agent.name, exc)
+            continue
+        if not content:
+            logger.warning("Project briefing returned empty content for %s", agent.name)
+            continue
+        workspace = get_workspace_manager().get(agent.id, agent.name, agent.title)
+        _write_project_context_projection(
+            workspace,
+            ctx_store,
+            content,
+            author="alex_briefing",
+        )
+        get_knowledge_audit_service().invalidate_agent(agent.id)
+        logger.info("Project context written for %s", agent.name)
+        updated += 1
 
     if broadcast_callback:
         await broadcast_callback({
             "type": "briefing_complete",
-            "data": {"team_id": team_id, "agent_count": len(agents)},
+            "data": {"team_id": team_id, "agent_count": len(agents), "agents_updated": updated},
         })
-    logger.info(f"Project briefing distributed to {len(agents)} agents in team {team_id}")
-
-
-def _distribute_briefing(raw: str, agents, factory):
-    """Parse Alex's response and write project_context.md to each agent's workspace."""
-    from app.core.workspace import get_workspace_manager
-    wm = get_workspace_manager()
-
-    for agent in agents:
-        start_marker = f"---AGENT:{agent.id}---"
-        end_marker = "---END---"
-        if start_marker in raw:
-            start = raw.index(start_marker) + len(start_marker)
-            end = raw.index(end_marker, start) if end_marker in raw[start:] else len(raw)
-            content = raw[start:end].strip()
-            if content:
-                workspace = wm.get(agent.id, agent.name, agent.title)
-                workspace.write_skill("project_context", content, author="alex_briefing")
-                logger.info(f"Project context written for {agent.name}")
-
-
-TARGETED_REBRIEFING_PROMPT = """You are {agent_name}, a {agent_title} in an AI agent team.
-
-## Current project context
-{project_summary}
-
-## Your current project_context.md
-{current_project_context}
-
-## New knowledge source: "{source_name}"
-{document_text}
-
-## Your task
-Rewrite your project_context.md, incorporating the relevant information from this new source.
-- Keep only what is relevant to YOUR role as {agent_title}
-- Integrate new facts, data, and insights that will help you do your job better
-- Preserve existing important context; update or extend it where the new source adds value
-- If information conflicts, prefer the new source (it's more recent)
-- Do NOT include information that belongs to other domains
-- Keep it under 700 words, actionable and precise
-- Write the full updated file, not just the additions
-
-Write only the Markdown content for project_context.md. No preamble."""
-
-
-DOCUMENT_REBRIEFING_PROMPT = """You are updating the project_context.md files for an AI agent team.
-
-## Project context
-{project_summary}
-
-## New document shared by the user: "{doc_filename}"
-{doc_text}
-
-## Team members
-{team_members}
-
-For each agent, rewrite their project_context.md to incorporate relevant information from this document.
-Focus only on what is relevant to each agent's specialization. Ignore sections that don't apply.
-Keep each file under 600 words. Be precise and actionable.
-
-Format your response as:
----AGENT:{{agent_id}}---
-(updated markdown content)
----END---
-
-Repeat for every agent listed above."""
+    logger.info("Project briefing distributed to %s/%s agents in team %s", updated, len(agents), team_id)
 
 
 async def run_targeted_rebriefing(agent_id: str, document_text: str, source_name: str, broadcast_callback=None) -> bool:
@@ -351,48 +594,42 @@ async def run_targeted_rebriefing(agent_id: str, document_text: str, source_name
 
     wm = get_workspace_manager()
     workspace = wm.get(agent.id, agent.name, agent.title)
-    current_ctx = workspace.read_skill("project_context") or "No existing project context."
-
-    if broadcast_callback:
-        await broadcast_callback({
-            "type": "agent_status",
-            "data": {"agent_id": agent.id, "status": "learning", "name": agent.name},
-        })
+    factory.update_agent_occupancy(
+        agent.id,
+        occupancy_status=AgentOccupancyStatus.BUSY,
+        occupancy_reason=AgentOccupancyReason.REBRIEFING,
+        current_task_title=f"Mise à jour contexte : {source_name}",
+        busy_since=_now_iso(),
+    )
+    await _broadcast_agent_status(agent.id, broadcast_callback)
 
     try:
         client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-        prompt = TARGETED_REBRIEFING_PROMPT.format(
-            agent_name=agent.name,
-            agent_title=agent.title,
-            project_summary=project_summary,
-            current_project_context=current_ctx[:2000],
-            source_name=source_name,
-            document_text=document_text[:12000],
-        )
-        response = await client.messages.create(
+        new_ctx = await _generate_role_project_context(
+            client=client,
             model=settings.claude_model,
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
+            agent=agent,
+            project_summary=project_summary,
+            source_name=source_name,
+            source_text=document_text,
         )
-        get_usage_tracker().log(settings.claude_model, response.usage.input_tokens, response.usage.output_tokens)
-        new_ctx = response.content[0].text.strip()
-        workspace.write_skill("project_context", new_ctx, author=f"knowledge:{source_name}")
+        _write_project_context_projection(
+            workspace,
+            ctx_store,
+            new_ctx,
+            author=f"knowledge:{source_name}",
+        )
+        get_knowledge_audit_service().invalidate_agent(agent.id)
         logger.info(f"project_context updated for {agent.name} from '{source_name}'")
 
-        if broadcast_callback:
-            await broadcast_callback({
-                "type": "agent_status",
-                "data": {"agent_id": agent.id, "status": "ready", "name": agent.name},
-            })
+        factory.clear_agent_occupancy(agent.id)
+        await _broadcast_agent_status(agent.id, broadcast_callback)
         return True
 
     except Exception as e:
         logger.exception(f"Targeted rebriefing failed for {agent.name}: {e}")
-        if broadcast_callback:
-            await broadcast_callback({
-                "type": "agent_status",
-                "data": {"agent_id": agent.id, "status": "ready", "name": agent.name, "error": str(e)},
-            })
+        factory.clear_agent_occupancy(agent.id)
+        await _broadcast_agent_status(agent.id, broadcast_callback)
         return False
 
 
@@ -427,11 +664,6 @@ async def run_document_rebriefing(doc_id: str, broadcast_callback=None):
         logger.warning("No team agents found for rebriefing")
         return
 
-    team_members = "\n".join(
-        f"- {a.name} (id: {a.id}) — {a.title}, specialization: {a.specialization}"
-        for a in all_agents
-    )
-
     if broadcast_callback:
         await broadcast_callback({
             "type": "briefing_start",
@@ -439,37 +671,32 @@ async def run_document_rebriefing(doc_id: str, broadcast_callback=None):
         })
 
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-    prompt = DOCUMENT_REBRIEFING_PROMPT.format(
-        project_summary=project_summary,
-        doc_filename=meta.filename,
-        doc_text=doc_text,
-        team_members=team_members,
-    )
-
-    try:
-        response = await client.messages.create(
-            model=settings.claude_model,
-            max_tokens=4096,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        get_usage_tracker().log(settings.claude_model, response.usage.input_tokens, response.usage.output_tokens)
-        raw = response.content[0].text
-    except Exception as e:
-        logger.exception(f"Document rebriefing LLM call failed: {e}")
-        return
-
-    wm = get_workspace_manager()
-    agents_by_id = {a.id: a for a in all_agents}
-
-    import re
-    blocks = re.findall(r"---AGENT:([a-f0-9\-]+)---\n([\s\S]*?)---END---", raw)
     updated = 0
-    for agent_id, content in blocks:
-        agent = agents_by_id.get(agent_id.strip())
-        if not agent:
+    wm = get_workspace_manager()
+    for agent in all_agents:
+        try:
+            content = await _generate_role_project_context(
+                client=client,
+                model=settings.claude_model,
+                agent=agent,
+                project_summary=project_summary,
+                source_name=meta.filename,
+                source_text=doc_text,
+            )
+        except Exception as e:
+            logger.exception("Document rebriefing failed for %s: %s", agent.name, e)
+            continue
+        if not content:
+            logger.warning("Document rebriefing returned empty content for %s", agent.name)
             continue
         workspace = wm.get(agent.id, agent.name, agent.title)
-        workspace.write_skill("project_context", content.strip(), author=f"doc_rebriefing:{meta.filename}")
+        _write_project_context_projection(
+            workspace,
+            ctx_store,
+            content.strip(),
+            author=f"doc_rebriefing:{meta.filename}",
+        )
+        get_knowledge_audit_service().invalidate_agent(agent.id)
         logger.info(f"project_context updated for {agent.name} from document '{meta.filename}'")
         updated += 1
 
@@ -501,7 +728,7 @@ async def run_agent_research(agent_id: str, topic: str, broadcast_callback=None)
         return False
 
     # Make SERPER_API_KEY available to SerperDevTool (reads from env)
-    if settings.serper_api_key:
+    if has_web_search(settings):
         os.environ["SERPER_API_KEY"] = settings.serper_api_key
 
     slug = re.sub(r"[^\w]", "_", topic.lower())[:40]
@@ -515,11 +742,14 @@ async def run_agent_research(agent_id: str, topic: str, broadcast_callback=None)
     workspace = wm.get(agent_cfg.id, agent_cfg.name, agent_cfg.title)
     current_project_ctx = workspace.read_skill("project_context") or ""
 
-    if broadcast_callback:
-        await broadcast_callback({
-            "type": "agent_status",
-            "data": {"agent_id": agent_id, "status": "learning", "name": agent_cfg.name, "task": f"Recherche : {topic}"},
-        })
+    factory.update_agent_occupancy(
+        agent_id,
+        occupancy_status=AgentOccupancyStatus.BUSY,
+        occupancy_reason=AgentOccupancyReason.RESEARCH,
+        current_task_title=f"Recherche : {topic}",
+        busy_since=_now_iso(),
+    )
+    await _broadcast_agent_status(agent_id, broadcast_callback)
 
     try:
         from crewai import Agent as CrAgent, Crew, Task as CrTask
@@ -527,7 +757,13 @@ async def run_agent_research(agent_id: str, topic: str, broadcast_callback=None)
         from app.tools.registry import get_tools_for_agent
         from app.models.agent import ModelTier
 
-        tools = get_tools_for_agent(agent_cfg.tools, agent_cfg.workspace_path)
+        tools = get_tools_for_agent(
+            agent_cfg.tools,
+            agent_cfg.workspace_path,
+            git_bindings=agent_cfg.git_bindings,
+            mcp_tool_bindings=agent_cfg.mcp_tool_bindings,
+            allow_git_write=False,
+        )
 
         llm = build_llm(agent_cfg.model_tier, agent_cfg.max_tokens)
         backstory = (
@@ -556,10 +792,26 @@ async def run_agent_research(agent_id: str, topic: str, broadcast_callback=None)
                 f"2. Browse 2–3 of the most promising result pages for deeper content\n"
                 f"3. Synthesise your findings into a structured Markdown document\n"
                 f"4. Save it using skill_write with skill_name='{skill_name}'\n\n"
-                f"The document should include: key facts, useful frameworks, relevant data points, "
-                f"sources cited, and actionable insights for your role."
+                f"The document MUST be structured as follows:\n\n"
+                f"## Summary\n"
+                f"(2–3 sentence overview of what you found)\n\n"
+                f"## Key Findings\n"
+                f"For each finding, include:\n"
+                f"- **Claim**: what you found\n"
+                f"- **Source**: URL or publication name where you verified it\n"
+                f"- **Confidence**: High / Medium / Low\n"
+                f"- **Relevance**: why it matters for your role on this project\n\n"
+                f"## Data Points\n"
+                f"List only numbers and statistics found in actual sources, with explicit citations.\n"
+                f"Format: `[Stat] — Source: [URL or publication], [Year if known]`\n\n"
+                f"## Gaps and Open Questions\n"
+                f"What you could NOT find or confirm. Flag these explicitly.\n\n"
+                f"## Actionable Insights\n"
+                f"What this research means for your specific role and tasks.\n\n"
+                f"CRITICAL: Do NOT invent numbers. If you cannot find a verified source for a statistic, "
+                f"put it in Gaps. A gap acknowledged is far better than a fabricated figure."
             ),
-            expected_output=f"A saved skill file '{skill_name}.md' with synthesised research findings.",
+            expected_output=f"A saved skill file '{skill_name}.md' with sourced research findings.",
             agent=crewai_agent,
         )
 
@@ -567,14 +819,23 @@ async def run_agent_research(agent_id: str, topic: str, broadcast_callback=None)
 
         loop = asyncio.get_event_loop()
         with ThreadPoolExecutor(max_workers=1) as executor:
-            await loop.run_in_executor(executor, crew.kickoff)
+            result = await loop.run_in_executor(executor, crew.kickoff)
+
+        research_model = (
+            settings.claude_model_opus
+            if agent_cfg.model_tier == ModelTier.OPUS
+            else settings.claude_model_sonnet
+        )
+        get_usage_tracker().log_crewai_usage(
+            research_model,
+            getattr(result, "token_usage", None) or getattr(crew, "usage_metrics", None),
+        )
 
         logger.info(f"Research complete for {agent_cfg.name}: topic='{topic}', skill='{skill_name}'")
+        get_knowledge_audit_service().invalidate_agent(agent_id)
+        factory.clear_agent_occupancy(agent_id)
+        await _broadcast_agent_status(agent_id, broadcast_callback)
         if broadcast_callback:
-            await broadcast_callback({
-                "type": "agent_status",
-                "data": {"agent_id": agent_id, "status": "ready", "name": agent_cfg.name},
-            })
             await broadcast_callback({
                 "type": "research_complete",
                 "data": {"agent_id": agent_id, "topic": topic, "skill_name": skill_name},
@@ -583,11 +844,8 @@ async def run_agent_research(agent_id: str, topic: str, broadcast_callback=None)
 
     except Exception as e:
         logger.exception(f"Research failed for {agent_cfg.name}: {e}")
-        if broadcast_callback:
-            await broadcast_callback({
-                "type": "agent_status",
-                "data": {"agent_id": agent_id, "status": "ready", "name": agent_cfg.name},
-            })
+        factory.clear_agent_occupancy(agent_id)
+        await _broadcast_agent_status(agent_id, broadcast_callback)
         return False
 
 
@@ -597,3 +855,10 @@ async def run_learning_phase_for_team(team_id: str, broadcast_callback=None):
     tasks = [run_learning_phase(agent, broadcast_callback) for agent in agents]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     logger.info(f"Learning phase complete for team {team_id}: {results}")
+
+    # After learning, run a project briefing to write role-specific project_context.md
+    # based on the full project context — overrides the self-generated version from learning
+    try:
+        await run_project_briefing(team_id, broadcast_callback)
+    except Exception as e:
+        logger.warning(f"Post-learning project briefing failed for team {team_id}: {e}")

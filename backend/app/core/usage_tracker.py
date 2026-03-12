@@ -14,31 +14,70 @@ import logging
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from app.config import get_settings
+from app.config.pricing import (
+    ANTHROPIC_PRICING_NOTE,
+    ANTHROPIC_PRICING_USD_PER_MILLION,
+)
 
 logger = logging.getLogger(__name__)
 
-# Pricing in USD per million tokens
-PRICING: dict[str, dict[str, float]] = {
-    "claude-sonnet-4-5": {"input": 3.0,  "output": 15.0},
-    "claude-opus-4-5":   {"input": 5.0,  "output": 25.0},
-    # Fallback for unknown models — use sonnet pricing
-    "_default":          {"input": 3.0,  "output": 15.0},
-}
-
-
 def _price_for(model: str) -> dict[str, float]:
-    for key, pricing in PRICING.items():
+    for key, pricing in ANTHROPIC_PRICING_USD_PER_MILLION.items():
         if key in model:
             return pricing
-    return PRICING["_default"]
+    return ANTHROPIC_PRICING_USD_PER_MILLION["_default"]
 
 
 def _cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
     p = _price_for(model)
     return (input_tokens * p["input"] + output_tokens * p["output"]) / 1_000_000
+
+
+def _default_data() -> dict[str, Any]:
+    return {
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_cost_usd": 0.0,
+        "daily": {},
+        "by_model": {},
+        "calls": 0,
+        "structured_outputs": {"by_flow": {}},
+    }
+
+
+def _default_last_failure() -> dict[str, Any]:
+    return {
+        "at": None,
+        "request_name": None,
+        "channel": None,
+        "error_kind": "unknown",
+        "stop_reason": None,
+        "validation_failed": False,
+        "message": None,
+    }
+
+
+def _default_flow_entry() -> dict[str, Any]:
+    return {
+        "calls": 0,
+        "successes": 0,
+        "failures": 0,
+        "channels": {},
+        "last_request_name": None,
+        "last_seen_at": None,
+        "failures_by_kind": {},
+        "last_failure": None,
+    }
+
+
+def _flow_name_from_request(request_name: str) -> str:
+    text = str(request_name or "").strip()
+    if not text:
+        return "unknown"
+    return text.split(":", 1)[0] or "unknown"
 
 
 class UsageTracker:
@@ -51,17 +90,40 @@ class UsageTracker:
     def _load(self) -> dict:
         if self._file.exists():
             try:
-                return json.loads(self._file.read_text(encoding="utf-8"))
+                data = json.loads(self._file.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    return _default_data()
+                data.setdefault("daily", {})
+                data.setdefault("by_model", {})
+                data.setdefault("calls", 0)
+                data.setdefault("total_input_tokens", 0)
+                data.setdefault("total_output_tokens", 0)
+                data.setdefault("total_cost_usd", 0.0)
+                structured_outputs = data.setdefault("structured_outputs", {})
+                if not isinstance(structured_outputs, dict):
+                    structured_outputs = {}
+                    data["structured_outputs"] = structured_outputs
+                by_flow = structured_outputs.setdefault("by_flow", {})
+                if isinstance(by_flow, dict):
+                    for flow_name, flow_entry in by_flow.items():
+                        if not isinstance(flow_entry, dict):
+                            by_flow[flow_name] = _default_flow_entry()
+                            continue
+                        flow_entry.setdefault("calls", 0)
+                        flow_entry.setdefault("successes", 0)
+                        flow_entry.setdefault("failures", 0)
+                        flow_entry.setdefault("channels", {})
+                        flow_entry.setdefault("last_request_name", None)
+                        flow_entry.setdefault("last_seen_at", None)
+                        flow_entry.setdefault("failures_by_kind", {})
+                        last_failure = flow_entry.setdefault("last_failure", None)
+                        if isinstance(last_failure, dict):
+                            for key, value in _default_last_failure().items():
+                                last_failure.setdefault(key, value)
+                return data
             except Exception:
                 pass
-        return {
-            "total_input_tokens": 0,
-            "total_output_tokens": 0,
-            "total_cost_usd": 0.0,
-            "daily": {},      # {"2026-03-06": {"input": N, "output": N, "cost": X}}
-            "by_model": {},   # {"claude-sonnet-4-5": {"input": N, "output": N, "cost": X}}
-            "calls": 0,
-        }
+        return _default_data()
 
     def _save(self):
         self._file.write_text(
@@ -86,7 +148,14 @@ class UsageTracker:
             day["cost"] = round(day["cost"] + cost, 6)
 
             # By model (normalize to base model name)
-            model_key = next((k for k in PRICING if k in model and k != "_default"), model)
+            model_key = next(
+                (
+                    key
+                    for key in ANTHROPIC_PRICING_USD_PER_MILLION
+                    if key in model and key != "_default"
+                ),
+                model,
+            )
             m = self._data["by_model"].setdefault(model_key, {"input": 0, "output": 0, "cost": 0.0})
             m["input"] += input_tokens
             m["output"] += output_tokens
@@ -95,6 +164,74 @@ class UsageTracker:
             self._save()
 
         logger.debug(f"[usage] {model} +{input_tokens}in +{output_tokens}out ${cost:.6f}")
+
+    def log_crewai_usage(self, model: str, usage: Any):
+        """
+        Log token usage produced by CrewAI / LiteLLM wrappers.
+        Accepts either a dict-like object or an object with CrewAI-style
+        `prompt_tokens` / `completion_tokens` attributes.
+        """
+        if usage is None:
+            return
+
+        if isinstance(usage, dict):
+            input_tokens = int(usage.get("prompt_tokens", 0) or 0)
+            output_tokens = int(usage.get("completion_tokens", 0) or 0)
+        else:
+            input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+            output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+
+        if input_tokens <= 0 and output_tokens <= 0:
+            return
+
+        self.log(model, input_tokens, output_tokens)
+
+    def log_structured_output(
+        self,
+        *,
+        request_name: str,
+        generation_channel: str,
+        success: bool,
+        failure_kind: str | None = None,
+        stop_reason: str | None = None,
+        validation_failed: bool = False,
+        failure_message: str | None = None,
+    ) -> None:
+        flow_name = _flow_name_from_request(request_name)
+        channel_name = str(generation_channel or "unknown")
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        with self._lock:
+            structured_outputs = self._data.setdefault("structured_outputs", {})
+            by_flow = structured_outputs.setdefault("by_flow", {})
+            flow_entry = by_flow.setdefault(
+                flow_name, _default_flow_entry(),
+            )
+            flow_entry["calls"] += 1
+            if success:
+                flow_entry["successes"] += 1
+            else:
+                flow_entry["failures"] += 1
+                normalized_kind = str(failure_kind or "unknown")
+                flow_entry["failures_by_kind"][normalized_kind] = int(
+                    flow_entry["failures_by_kind"].get(normalized_kind, 0)
+                ) + 1
+                message = str(failure_message or "").strip() or None
+                if message and len(message) > 240:
+                    message = message[:239].rstrip() + "…"
+                flow_entry["last_failure"] = {
+                    "at": now_iso,
+                    "request_name": request_name,
+                    "channel": channel_name,
+                    "error_kind": normalized_kind,
+                    "stop_reason": str(stop_reason or "").strip() or None,
+                    "validation_failed": bool(validation_failed),
+                    "message": message,
+                }
+            flow_entry["channels"][channel_name] = int(flow_entry["channels"].get(channel_name, 0)) + 1
+            flow_entry["last_request_name"] = request_name
+            flow_entry["last_seen_at"] = now_iso
+            self._save()
 
     def summary(self) -> dict:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -120,7 +257,10 @@ class UsageTracker:
                     }
                     for model, v in self._data["by_model"].items()
                 },
-                "pricing_note": "Estimated cost based on published Anthropic pricing (March 2026). Excludes prompt caching discounts.",
+                "structured_outputs": {
+                    "by_flow": dict(self._data.get("structured_outputs", {}).get("by_flow", {}))
+                },
+                "pricing_note": ANTHROPIC_PRICING_NOTE,
             }
 
 

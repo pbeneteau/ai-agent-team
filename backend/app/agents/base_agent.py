@@ -28,6 +28,7 @@ def build_crewai_agent(
     config: AgentConfig,
     tools: Optional[list] = None,
     backstory_override: Optional[str] = None,
+    allow_delegation_override: Optional[bool] = None,
 ) -> Agent:
     settings = get_settings()
     model = (
@@ -52,7 +53,11 @@ def build_crewai_agent(
         llm=llm,
         tools=tools or [],
         verbose=True,
-        allow_delegation=config.role.value in ("associate", "team_lead"),
+        allow_delegation=(
+            allow_delegation_override
+            if allow_delegation_override is not None
+            else config.role.value in ("associate", "team_lead")
+        ),
         max_iter=config.max_iter,
         max_tokens=config.max_tokens,
     )

@@ -2,118 +2,96 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
 import {
-  LayoutDashboard,
-  MessageSquare,
-  Users,
-  ListTodo,
+  ChevronRight,
   Sparkles,
-  Zap,
-  BarChart2,
 } from "lucide-react";
+
+import { SIDEBAR_NAV_ITEMS } from "@/lib/config/navigation";
+import {
+  OPERATOR_DESK_LABEL,
+  OPERATOR_DESK_SUBTITLE,
+  OPS_DESK_SUBTITLE,
+  OPS_DESK_TITLE,
+} from "@/lib/config/page-copy";
 import { cn } from "@/lib/utils";
-
-interface UsageSummary {
-  today: { input_tokens: number; output_tokens: number; cost_usd: number };
-  total: { input_tokens: number; output_tokens: number; cost_usd: number; calls: number };
-}
-
-const NAV_ITEMS = [
-  { href: "/", icon: LayoutDashboard, label: "Dashboard" },
-  { href: "/chat", icon: MessageSquare, label: "Chat avec Alex" },
-  { href: "/team", icon: Users, label: "Mon Équipe" },
-  { href: "/tasks", icon: ListTodo, label: "Tâches" },
-  { href: "/usage", icon: BarChart2, label: "Usage & Coûts" },
-];
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
 
 export function Sidebar() {
   const pathname = usePathname();
-  const [usage, setUsage] = useState<UsageSummary | null>(null);
-
-  useEffect(() => {
-    const load = () =>
-      fetch(`${API_BASE}/usage/`)
-        .then((r) => r.json())
-        .then(setUsage)
-        .catch(() => {});
-    load();
-    const interval = setInterval(load, 30_000);
-    return () => clearInterval(interval);
-  }, []);
 
   return (
-    <aside className="w-64 bg-slate-900 text-white flex flex-col h-screen sticky top-0">
-      {/* Logo */}
-      <div className="px-6 py-5 border-b border-slate-800">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center">
-            <Sparkles className="w-4 h-4 text-white" />
+    <aside className="flex h-screen w-[92px] shrink-0 flex-col border-r border-[var(--ops-border)] bg-[var(--ops-canvas)] px-3 py-4 lg:w-[244px]">
+      <div className="flex items-center gap-3 px-2 pb-4">
+        <div className="flex size-11 shrink-0 items-center justify-center rounded-[18px] border border-[var(--ops-border)] bg-[var(--ops-surface-strong)] shadow-[0_18px_36px_-28px_rgba(15,23,42,0.3)]">
+          <div className="flex size-8 items-center justify-center rounded-2xl bg-[radial-gradient(circle_at_top,rgba(120,119,255,0.5),rgba(15,23,42,0.98))] text-white">
+            <Sparkles className="size-4" />
           </div>
-          <div>
-            <p className="font-bold text-sm">AgentTeam</p>
-            <p className="text-[10px] text-slate-400">Votre équipe IA</p>
-          </div>
+        </div>
+        <div className="hidden min-w-0 lg:block">
+          <p className="text-sm font-semibold tracking-tight text-[var(--ops-ink)]">{OPS_DESK_TITLE}</p>
+          <p className="mt-1 text-xs leading-5 text-[var(--ops-muted-ink)]">
+            {OPS_DESK_SUBTITLE}
+          </p>
         </div>
       </div>
 
-      {/* Nav */}
-      <nav className="flex-1 px-3 py-4 space-y-1">
-        {NAV_ITEMS.map(({ href, icon: Icon, label }) => {
-          const isActive = pathname === href;
+      <nav className="mt-2 flex flex-1 flex-col gap-2">
+        {SIDEBAR_NAV_ITEMS.map(({ href, icon: Icon, label, description, aliases }) => {
+          const isActive = aliases.some((matcher) => matcher.test(pathname));
           return (
             <Link
               key={href}
               href={href}
+              title={label}
+              aria-label={label}
               className={cn(
-                "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
+                "group flex items-center gap-3 rounded-[22px] border px-3 py-3 transition-all duration-200",
                 isActive
-                  ? "bg-indigo-600 text-white"
-                  : "text-slate-400 hover:text-white hover:bg-slate-800"
+                  ? "border-[var(--ops-border-strong)] bg-[var(--ops-surface-strong)] text-primary shadow-[0_24px_36px_-30px_rgba(15,23,42,0.25)]"
+                  : "border-transparent text-[var(--ops-muted-ink)] hover:border-[var(--ops-border)] hover:bg-[var(--ops-surface)] hover:text-[var(--ops-ink)]"
               )}
             >
-              <Icon className="w-4 h-4 flex-shrink-0" />
-              {label}
+              <div
+                className={cn(
+                  "flex size-11 shrink-0 items-center justify-center rounded-[18px] border transition-colors",
+                  isActive
+                    ? "border-[var(--ops-border)] bg-primary/10 text-primary"
+                    : "border-transparent bg-[var(--ops-surface-muted)] text-[var(--ops-muted-ink)] group-hover:border-[var(--ops-border)] group-hover:bg-[var(--ops-surface-strong)]"
+                )}
+              >
+                <Icon className="size-4 shrink-0" />
+              </div>
+
+              <div className="hidden min-w-0 flex-1 lg:block">
+                <p className="truncate text-sm font-medium">{label}</p>
+                <p className="mt-1 truncate text-xs text-[var(--ops-muted-ink)]">{description}</p>
+              </div>
+
+              <ChevronRight
+                className={cn(
+                  "hidden size-4 shrink-0 transition-all lg:block",
+                  isActive
+                    ? "translate-x-0 text-primary"
+                    : "-translate-x-1 text-transparent group-hover:translate-x-0 group-hover:text-[var(--ops-muted-ink)]"
+                )}
+              />
             </Link>
           );
         })}
       </nav>
 
-      {/* Usage monitor */}
-      <div className="px-4 py-3 border-t border-slate-800 space-y-2">
-        <div className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
-          <Zap className="w-3 h-3" />
-          Coût estimé
+      <div className="mt-auto flex items-center gap-3 rounded-[22px] border border-[var(--ops-border)] bg-[var(--ops-surface)] px-3 py-3">
+        <button
+          type="button"
+          title="Profile"
+          className="flex size-11 shrink-0 items-center justify-center rounded-[18px] border border-[var(--ops-border)] bg-[var(--ops-surface-strong)] text-sm font-medium text-[var(--ops-ink)] shadow-[0_12px_26px_-24px_rgba(15,23,42,0.22)]"
+        >
+          PB
+        </button>
+        <div className="hidden min-w-0 lg:block">
+          <p className="text-sm font-medium text-[var(--ops-ink)]">{OPERATOR_DESK_LABEL}</p>
+          <p className="mt-1 text-xs text-[var(--ops-muted-ink)]">{OPERATOR_DESK_SUBTITLE}</p>
         </div>
-        {usage ? (
-          <div className="space-y-1.5">
-            <div className="flex justify-between text-[11px]">
-              <span className="text-slate-400">Aujourd&apos;hui</span>
-              <span className={cn(
-                "font-mono font-medium",
-                usage.today.cost_usd > 1 ? "text-amber-400" : "text-green-400"
-              )}>
-                ${usage.today.cost_usd.toFixed(4)}
-              </span>
-            </div>
-            <div className="flex justify-between text-[11px]">
-              <span className="text-slate-400">Total</span>
-              <span className="font-mono font-medium text-slate-300">
-                ${usage.total.cost_usd.toFixed(4)}
-              </span>
-            </div>
-            <div className="text-[10px] text-slate-600">
-              {usage.total.calls} appel{usage.total.calls !== 1 ? "s" : ""} · {((usage.total.input_tokens + usage.total.output_tokens) / 1000).toFixed(1)}K tokens
-            </div>
-          </div>
-        ) : (
-          <p className="text-[11px] text-slate-600">—</p>
-        )}
-        <p className="text-[9px] text-slate-700 leading-tight">
-          Estimation basée sur les tarifs Anthropic officiels. Sans crédits de cache.
-        </p>
       </div>
     </aside>
   );

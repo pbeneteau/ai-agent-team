@@ -2,87 +2,51 @@
 The Associate agent chat engine.
 Handles the main user conversation, detects intent and delegates tasks.
 """
-import json
 import logging
+import re
+from dataclasses import dataclass
 from functools import lru_cache
-from typing import AsyncGenerator, Optional
+from typing import Awaitable, Callable, Optional
+
 from anthropic import AsyncAnthropic
 
 from app.config import get_settings
+from app.config.prompts import ASSOCIATE_SYSTEM_PROMPT
+from app.config.token_budgets import ASSOCIATE_MAX_HISTORY_MESSAGES, ASSOCIATE_MAX_TOKENS
 from app.core.agent_factory import get_agent_factory
+from app.core.project_brief import render_project_brief_summary
 from app.memory.project_context import get_project_context_store
-from app.memory.skills_store import get_skills_store
 from app.core.document_store import get_document_store
+from app.core.structured_json import extract_json_object
 from app.core.usage_tracker import get_usage_tracker
+from app.models.chat_actions import (
+    AssistantAction,
+    action_from_payload,
+    action_from_tool_use,
+    build_assistant_action_tools,
+)
 
 logger = logging.getLogger(__name__)
 
-ASSOCIATE_SYSTEM_PROMPT = """You are Alex, the user's AI associate and right-hand. You are the top-level agent in their AI team.
-
-## Your role
-- Be the user's trusted strategic partner
-- Understand their needs and delegate to the right team members
-- Synthesize results and report back clearly
-- Help them build and manage their AI agent team
-- Coach sub-agents by writing skills to their workspace (use agent_skill_write)
-- Be proactive, concise, and action-oriented
-
-## Current team context
-{team_context}
-
-## Project context  
-{project_context}
-
-## Your tools
-- **skill_write / skill_read / skill_list** — manage your own skill documentation
-- **agent_skill_write / agent_skill_read** — write or read skills for any team member (use to coach them)
-- **web_search, web_browser** — research and browse
-- **file_read / file_write** — work with files in your workspace
-
-## Shared documents
-The user can upload documents (PDF, DOCX, etc.) to give you context.
-Relevant excerpts are injected automatically below when they match the conversation.
-{documents_context}
-
-## How to handle requests
-- For team building: guide the user through creating their team
-- For work tasks: identify which team(s) should handle it and respond with a task delegation plan
-- For questions: answer directly or search for information
-- For status updates: report on team progress
-- To coach a team member: use agent_skill_write to add expertise to their skills/ directory
-
-When you need to delegate a task to a team, include a JSON action block in your response:
-```json
-{{"action": "create_task", "title": "...", "description": "...", "team_id": "...", "priority": "low|medium|high"}}
-```
-
-When you have gathered enough information and are ready to create the team (user has validated the design), create it directly — no need to switch modes:
-```json
-{{"action": "create_team_direct", "project": {{"name": "...", "description": "...", "domain": "..."}}, "teams": [{{"name": "Team Name", "description": "...", "domain": "...", "agents": [{{"name": "Sophie", "title": "Fundraising Lead", "specialization": "fundraising", "goal": "Raise the seed round...", "backstory": "Expert in...", "is_lead": true, "model_tier": "opus"}}, {{"name": "Marcus", "title": "Business Analyst", "specialization": "business_analysis", "goal": "...", "backstory": "...", "model_tier": "sonnet"}}]}}]}}
-```
-Rules for create_team_direct:
-- Put all agents in the most logical team grouping
-- First agent in each team's agents list is the lead (or set "is_lead": true explicitly)
-- Leads get model_tier "opus", specialists get "sonnet"
-- Always include "goal" and "backstory" tailored to the project context
-- Only use built-in templates (dev/marketing/business/product) if they perfectly match; otherwise use custom agents
-
-If you truly need a discovery conversation first (requirements completely unknown):
-```json
-{{"action": "start_team_builder"}}
-```
-Prefer create_team_direct in all cases where you already know the team structure.
-
-When you need to collect structured information from the user (e.g., to define a project, gather requirements), use a gather_info form instead of a back-and-forth conversation:
-```json
-{{"action": "gather_info", "title": "Titre du formulaire", "description": "Explication courte (optionnel)", "fields": [{{"id": "field_id", "label": "Label", "type": "text|textarea|select", "placeholder": "...", "options": ["opt1", "opt2"], "required": true}}]}}
-```
-The user will see a dynamic form and submit their answers in one go. Use this for initial project setup, team creation requirements, task briefings, etc.
-
-Respond in the same language as the user. Be warm, professional, and proactive."""
+_LEGACY_JSON_BLOCK_RE = re.compile(r"```json\s*[\s\S]*?```", re.IGNORECASE)
 
 
-MAX_HISTORY_MESSAGES = 50
+@dataclass
+class AssociateResponse:
+    human_text: str
+    action: AssistantAction | None = None
+    action_source: str = "none"
+
+
+@dataclass
+class _AssociateActionResolution:
+    action: AssistantAction | None
+    action_source: str
+    request_name: str
+    success: bool
+    tool_use_error: str | None = None
+    legacy_error: str | None = None
+    multiple_tool_calls: bool = False
 
 
 class AssociateChat:
@@ -102,17 +66,21 @@ class AssociateChat:
             team_lines = []
             for team in teams:
                 team_agents = factory.get_team_agents(team.id)
-                agent_names = ", ".join(f"{a.name} ({a.title})" for a in team_agents)
-                team_lines.append(f"- {team.name}: {agent_names}")
+                agent_names = ", ".join(
+                    f"{a.name} (agent_id: {a.id}, title: {a.title}, status: {a.status.value})"
+                    for a in team_agents
+                )
+                team_lines.append(f"- {team.name} (team_id: {team.id}): {agent_names}")
             team_context = "\n".join(team_lines)
         else:
             team_context = "No teams created yet. Guide the user to build their team."
 
-        project_ctx = ctx_store.load_context()
-        if project_ctx:
-            project_context = f"Project: {project_ctx.get('name', 'Unknown')} — {project_ctx.get('description', '')}"
-        else:
-            project_context = "No project defined yet."
+        project_brief = ctx_store.get_active_brief()
+        project_context = (
+            render_project_brief_summary(project_brief.model_dump(mode="json"), include_meta=True)
+            if project_brief
+            else "No project defined yet."
+        )
 
         # RAG: inject relevant document excerpts based on the current message
         documents_context = ""
@@ -128,9 +96,17 @@ class AssociateChat:
             team_context=team_context,
             project_context=project_context,
             documents_context=documents_context,
+            default_lead_model_tier=self.settings.default_team_lead_model_tier.value,
+            default_agent_model_tier=self.settings.default_agent_model_tier.value,
         )
 
-    async def chat(self, user_message: str, tagged_doc_ids: list[str] | None = None) -> AsyncGenerator[str, None]:
+    async def stream_response(
+        self,
+        user_message: str,
+        *,
+        tagged_doc_ids: list[str] | None = None,
+        on_text_chunk: Callable[[str], Awaitable[None]] | None = None,
+    ) -> AssociateResponse:
         # Build the effective message: prepend explicitly tagged document content
         effective_message = user_message
         if tagged_doc_ids:
@@ -146,13 +122,15 @@ class AssociateChat:
         model = self.settings.claude_model
         async with self.client.messages.stream(
             model=model,
-            max_tokens=2048,
+            max_tokens=ASSOCIATE_MAX_TOKENS,
             system=system,
             messages=self.history,
+            tools=build_assistant_action_tools(),
         ) as stream:
             async for text in stream.text_stream:
                 full_response += text
-                yield text
+                if on_text_chunk:
+                    await on_text_chunk(text)
             # Capture token usage while still inside the stream context
             final_msg = await stream.get_final_message()
             get_usage_tracker().log(
@@ -161,25 +139,141 @@ class AssociateChat:
                 output_tokens=final_msg.usage.output_tokens,
             )
 
-        self.history.append({"role": "assistant", "content": full_response})
-        if len(self.history) > MAX_HISTORY_MESSAGES:
-            self.history = self.history[-MAX_HISTORY_MESSAGES:]
+        visible_response = full_response
+        resolution = self._resolve_action(final_msg.content, full_response)
+        action = resolution.action
+        action_source = resolution.action_source
+        if "legacy_json" in action_source:
+            visible_response = self._strip_legacy_action_block(full_response)
 
-    def _extract_and_queue_action(self, text: str) -> Optional[dict]:
-        try:
-            start = text.find("```json")
-            end = text.find("```", start + 6)
-            if start != -1 and end != -1:
-                json_str = text[start + 7:end].strip()
-                action = json.loads(json_str)
+        get_usage_tracker().log_structured_output(
+            request_name=resolution.request_name,
+            generation_channel=action_source,
+            success=resolution.success,
+            failure_kind=None if resolution.success else _associate_failure_kind(resolution),
+            stop_reason=str(getattr(final_msg, "stop_reason", None) or "").strip() or None,
+            validation_failed=False,
+            failure_message=None if resolution.success else (resolution.tool_use_error or resolution.legacy_error),
+        )
+        if not resolution.success or resolution.tool_use_error or resolution.legacy_error:
+            logger.warning(
+                "Associate structured action degraded channel=%s success=%s request=%s tool_use_error=%r legacy_error=%r multiple_tool_calls=%s stop_reason=%s",
+                resolution.action_source,
+                resolution.success,
+                resolution.request_name,
+                resolution.tool_use_error,
+                resolution.legacy_error,
+                resolution.multiple_tool_calls,
+                getattr(final_msg, "stop_reason", None),
+            )
+
+        self.history.append({"role": "assistant", "content": visible_response})
+        if len(self.history) > ASSOCIATE_MAX_HISTORY_MESSAGES:
+            self.history = self.history[-ASSOCIATE_MAX_HISTORY_MESSAGES:]
+        return AssociateResponse(
+            human_text=visible_response,
+            action=action,
+            action_source=action_source,
+        )
+
+    def _resolve_action(self, blocks: list[object] | None, text: str) -> _AssociateActionResolution:
+        tool_blocks = [
+            block for block in (blocks or [])
+            if getattr(block, "type", None) == "tool_use"
+        ]
+        multiple_tool_calls = len(tool_blocks) > 1
+        tool_use_error: str | None = None
+        request_name = "associate_chat_response"
+
+        if tool_blocks:
+            tool_block = tool_blocks[0]
+            request_name = _associate_request_name_from_tool_name(getattr(tool_block, "name", ""))
+            if multiple_tool_calls:
+                logger.warning("Associate returned multiple tool calls; only the first one will be used.")
+            try:
+                action = action_from_tool_use(
+                    getattr(tool_block, "name", ""),
+                    getattr(tool_block, "input", None) or {},
+                )
                 logger.info("Associate action detected: %s", action)
-                return action
-        except (json.JSONDecodeError, ValueError):
-            logger.debug("No valid JSON action block found in associate response")
+                return _AssociateActionResolution(
+                    action=action,
+                    action_source="tool_use",
+                    request_name=_associate_observability_request_name(action),
+                    success=True,
+                    multiple_tool_calls=multiple_tool_calls,
+                )
+            except Exception as exc:
+                tool_use_error = str(exc)
+                logger.debug(
+                    "Invalid associate tool call: %s (tool=%s)",
+                    exc,
+                    getattr(tool_block, "name", None),
+                )
+
+        legacy_attempted = "```json" in text or '"action"' in text
+        legacy_error: str | None = None
+        if legacy_attempted:
+            try:
+                payload = extract_json_object(text)
+                action = action_from_payload(payload)
+                logger.info("Associate legacy action detected: %s", action)
+                action_source = "legacy_json" if tool_use_error is None else "tool_use_invalid_legacy_json"
+                return _AssociateActionResolution(
+                    action=action,
+                    action_source=action_source,
+                    request_name=_associate_observability_request_name(action),
+                    success=True,
+                    tool_use_error=tool_use_error,
+                    multiple_tool_calls=multiple_tool_calls,
+                )
+            except Exception as exc:
+                legacy_error = str(exc)
+                logger.debug("No valid legacy associate action block found: %s", exc)
+
+        if tool_use_error is not None:
+            return _AssociateActionResolution(
+                action=None,
+                action_source="tool_use_invalid_text_only",
+                request_name=request_name,
+                success=False,
+                tool_use_error=tool_use_error,
+                legacy_error=legacy_error,
+                multiple_tool_calls=multiple_tool_calls,
+            )
+        if legacy_error is not None:
+            return _AssociateActionResolution(
+                action=None,
+                action_source="legacy_json_invalid_text_only",
+                request_name=request_name,
+                success=False,
+                legacy_error=legacy_error,
+                multiple_tool_calls=multiple_tool_calls,
+            )
+        return _AssociateActionResolution(
+            action=None,
+            action_source="text_only",
+            request_name=request_name,
+            success=True,
+            multiple_tool_calls=multiple_tool_calls,
+        )
+
+    def _extract_action_from_response(self, blocks: list[object] | None) -> AssistantAction | None:
+        return self._resolve_action(blocks, "").action
+
+    def _extract_legacy_action(self, text: str) -> AssistantAction | None:
+        resolution = self._resolve_action([], text)
+        if "legacy_json" in resolution.action_source:
+            return resolution.action
         return None
 
+    def _strip_legacy_action_block(self, text: str) -> str:
+        stripped = _LEGACY_JSON_BLOCK_RE.sub("", text).strip()
+        return stripped
+
     def extract_action(self, text: str) -> Optional[dict]:
-        return self._extract_and_queue_action(text)
+        action = self._extract_legacy_action(text)
+        return action.model_dump(mode="json") if action else None
 
     def reset_history(self):
         self.history = []
@@ -209,6 +303,50 @@ def _build_tagged_docs_context(doc_store, doc_ids: list[str]) -> str:
         parts.append(f"### @{meta.filename}\n{content}\n")
 
     return "\n".join(parts) if len(parts) > 1 else ""
+
+
+def _associate_observability_request_name(action: AssistantAction | None) -> str:
+    if action is None:
+        return "associate_chat_response"
+
+    action_name = getattr(action, "action", "")
+    if action_name == "gather_info":
+        return "associate_gather_info"
+    if action_name == "start_team_builder":
+        return "associate_start_team_builder"
+    if action_name == "trigger_learning":
+        return "associate_trigger_learning"
+    if action_name in {"plan_task", "plan_mode", "create_task"}:
+        kind = str(getattr(action, "kind", "") or "").strip().lower()
+        if kind == "team":
+            return "associate_propose_team_plan"
+        return "associate_propose_task_plan"
+    if action_name in {"plan_team", "create_team_direct"}:
+        return "associate_propose_team_plan"
+    return "associate_chat_action"
+
+
+def _associate_request_name_from_tool_name(tool_name: str | None) -> str:
+    name = str(tool_name or "").strip()
+    if name == "gather_info":
+        return "associate_gather_info"
+    if name == "start_team_builder":
+        return "associate_start_team_builder"
+    if name == "trigger_learning":
+        return "associate_trigger_learning"
+    if name == "propose_task_plan":
+        return "associate_propose_task_plan"
+    if name == "propose_team_plan":
+        return "associate_propose_team_plan"
+    return "associate_chat_action"
+
+
+def _associate_failure_kind(resolution: _AssociateActionResolution) -> str:
+    if resolution.tool_use_error:
+        return "tool_use"
+    if resolution.legacy_error:
+        return "legacy_json"
+    return "unknown"
 
 
 @lru_cache(maxsize=1)

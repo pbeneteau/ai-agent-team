@@ -2,16 +2,16 @@
 Conversational team builder.
 Drives the dialogue to understand the project, then proposes and creates the agent team.
 """
-import json
 import logging
 from typing import Optional, AsyncGenerator
+
 from anthropic import AsyncAnthropic
+from pydantic import BaseModel, Field
 
 from app.config import get_settings
-from app.core.agent_factory import get_agent_factory
-from app.agents.specialists.templates import TEAM_TEMPLATES, AGENT_TEMPLATES
-from app.memory.project_context import get_project_context_store
+from app.core.structured_json import StructuredJsonError, parse_structured_json_text
 from app.core.usage_tracker import get_usage_tracker
+from app.core.universal_plan import TeamPlanExecutor, UniversalPlanSession
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ The conversation has two phases:
 2. PROPOSAL: Once you have enough info, propose a team structure in JSON format and ask for validation.
 
 When proposing a team, respond with:
-1. A brief explanation paragraph
+1. A single short explanation sentence
 2. A JSON block with this exact structure:
 ```json
 {
@@ -49,10 +49,18 @@ When the user confirms/validates the team, respond with the same JSON but with "
 
 Available team templates: dev (PM + Frontend + Backend), marketing (Lead + Content + Social), business (Finance), product (Designer).
 
+Keep all prose minimal. Avoid repeating the project context. The JSON block is the source of truth.
+
 Be concise, professional and encouraging. Respond in the same language as the user."""
 
 
 MAX_HISTORY_MESSAGES = 50
+
+
+class _TeamBuilderProposalPayload(BaseModel):
+    project: dict = Field(default_factory=dict)
+    teams: list[dict] = Field(default_factory=list)
+    ready_to_create: bool = False
 
 
 class TeamBuilderSession:
@@ -70,7 +78,7 @@ class TeamBuilderSession:
         full_response = ""
         async with self.client.messages.stream(
             model=self.settings.claude_model,
-            max_tokens=2048,
+            max_tokens=1400,
             system=TEAM_BUILDER_SYSTEM_PROMPT,
             messages=self.history,
         ) as stream:
@@ -98,51 +106,44 @@ class TeamBuilderSession:
                 self.phase = "proposal"
 
     def _extract_json(self, text: str) -> Optional[dict]:
+        if "```json" not in text and '"ready_to_create"' not in text:
+            return None
         try:
-            start = text.find("```json")
-            end = text.find("```", start + 6)
-            if start != -1 and end != -1:
-                json_str = text[start + 7:end].strip()
-                return json.loads(json_str)
-        except Exception:
-            pass
+            structured = parse_structured_json_text(
+                raw_text=text,
+                response_model=_TeamBuilderProposalPayload,
+                request_name="team_builder_proposal",
+            )
+            return structured.value.model_dump(mode="json")
+        except StructuredJsonError as exc:
+            logger.debug(
+                "No valid team builder proposal found: %s (preview=%r)",
+                exc,
+                exc.telemetry.raw_preview,
+            )
         return None
 
     async def create_team_from_proposal(self) -> dict:
         if not self.proposed_team:
             return {"error": "No proposal available"}
 
-        factory = get_agent_factory()
-        ctx_store = get_project_context_store()
-
         project = self.proposed_team.get("project", {})
-        ctx_store.save_context({
-            "name": project.get("name", "Unnamed Project"),
-            "description": project.get("description", ""),
-            "domain": project.get("domain", ""),
-            "conversation": self.history,
-        })
-        ctx_store.index_text(
-            text=f"{project.get('name', '')} — {project.get('description', '')}",
-            doc_id="project_overview",
-            metadata={"type": "project", "domain": project.get("domain", "")},
+        logger.warning("Using deprecated legacy team builder flow; delegating creation to TeamPlanExecutor.")
+        draft = UniversalPlanSession(session_id="legacy-team-builder").set_team_draft(
+            {
+                "action": "plan_team",
+                "kind": "team",
+                "title": project.get("name", "Unnamed Project"),
+                "summary": project.get("description", "")[:240],
+                "project": project,
+                "teams": self.proposed_team.get("teams", []),
+            }
         )
 
-        created_teams = []
-        created_agents = []
+        async def _noop_broadcast(_message: dict) -> None:
+            return
 
-        for team_spec in self.proposed_team.get("teams", []):
-            template_key = team_spec.get("template")
-            if template_key and template_key in TEAM_TEMPLATES:
-                team, agents = factory.create_team_from_template(template_key)
-                created_teams.append(team.model_dump())
-                created_agents.extend([a.model_dump() for a in agents])
-
-        return {
-            "project": project,
-            "teams": created_teams,
-            "agents": created_agents,
-        }
+        return await TeamPlanExecutor().execute(draft, _noop_broadcast)
 
     def is_confirmed(self) -> bool:
         return self.phase == "confirmed"

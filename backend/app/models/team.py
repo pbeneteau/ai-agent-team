@@ -10,6 +10,7 @@ class TeamConfig(BaseModel):
     description: str
     domain: str
     lead_agent_id: Optional[str] = None
+    scope_note: str = ""
     agent_ids: list[str] = Field(default_factory=list)
 
 
@@ -19,6 +20,7 @@ class TeamResponse(BaseModel):
     description: str
     domain: str
     lead_agent_id: Optional[str] = None
+    scope_note: str = ""
     agents: list[AgentResponse] = []
 
 
@@ -28,6 +30,13 @@ class OrganigrammeNode(BaseModel):
     title: str
     role: str
     status: str
+    occupancy_status: str = "idle"
+    occupancy_reason: Optional[str] = None
+    current_task_id: Optional[str] = None
+    current_task_title: Optional[str] = None
+    current_node_id: Optional[str] = None
+    current_node_title: Optional[str] = None
+    busy_since: Optional[str] = None
     parent_id: Optional[str] = None
     children: list["OrganigrammeNode"] = []
 

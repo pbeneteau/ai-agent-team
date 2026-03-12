@@ -9,9 +9,8 @@ The Associate (Alex) additionally receives: agent_skill_write, agent_skill_read
 so it can coach and write skills for sub-agents.
 
 Model tiers:
-  - "sonnet"  (default) — all specialists. Reliable, capable, cost-reasonable.
-  - "opus"    — team leads and roles requiring multi-step reasoning or critical decisions.
-                Set model_tier="opus" in the template to activate.
+  - "sonnet"  (default) — all agents during development. Reliable, capable, cost-reasonable.
+  - "opus"    — optional override for higher-stakes production usage.
 """
 
 # Tools available to all agents — always injected regardless of template
@@ -31,11 +30,11 @@ AGENT_TEMPLATES: dict[str, dict] = {
             "You are an experienced agile project manager who has shipped numerous SaaS products. "
             "You excel at breaking down complex projects into actionable tasks, managing priorities, "
             "and keeping teams aligned and productive. "
+            "When you make market or industry claims, you cite real sources. "
             "Use skill_write to document your PM methodologies and checklists."
         ),
-        "tools": ["web_search", "file_read", "file_write", "workspace_list"],
-        # PM coordinates the team — uses Opus for better task decomposition
-        "model_tier": "opus",
+        "tools": ["web_search", "web_browser", "file_read", "workspace_list"],
+        "model_tier": "sonnet",
         "max_iter": 20,
     },
     "frontend_developer": {
@@ -46,6 +45,8 @@ AGENT_TEMPLATES: dict[str, dict] = {
             "You are a senior frontend developer specializing in React, Next.js and modern CSS. "
             "You care deeply about user experience, accessibility and performance. "
             "You clone repos, run builds and store deliverables in your workspace. "
+            "Use file_write only for repo files, scripts or scratch workspace files. "
+            "Use task_deliverable_write for final task outputs that should be attached to the task. "
             "Use skill_write to capture component patterns, architecture decisions and coding standards."
         ),
         "tools": ["web_search", "code_execution", "file_read", "file_write", "git_clone", "workspace_shell", "workspace_list", "github"],
@@ -58,6 +59,8 @@ AGENT_TEMPLATES: dict[str, dict] = {
             "You are a senior backend developer with expertise in Python, FastAPI, databases and distributed systems. "
             "You prioritize clean architecture, security and performance. "
             "You clone repos, run tests and write code deliverables to your workspace. "
+            "Use file_write only for repo files, scripts or scratch workspace files. "
+            "Use task_deliverable_write for final task outputs that should be attached to the task. "
             "Use skill_write to document API design patterns, database schemas and best practices."
         ),
         "tools": ["web_search", "code_execution", "file_read", "file_write", "git_clone", "workspace_shell", "workspace_list", "github"],
@@ -70,6 +73,8 @@ AGENT_TEMPLATES: dict[str, dict] = {
             "You are a DevOps engineer with deep expertise in Docker, Kubernetes, AWS and CI/CD. "
             "You ensure the team ships reliably and the infrastructure scales. "
             "You clone infrastructure repos and run shell commands in your workspace. "
+            "Use file_write only for infrastructure files, scripts or scratch workspace files. "
+            "Use task_deliverable_write for final task outputs that should be attached to the task. "
             "Use skill_write to document deployment runbooks, infrastructure patterns and incident playbooks."
         ),
         "tools": ["web_search", "code_execution", "file_read", "file_write", "git_clone", "workspace_shell", "workspace_list", "github"],
@@ -84,9 +89,8 @@ AGENT_TEMPLATES: dict[str, dict] = {
             "You combine data-driven decision making with creative campaigns. "
             "Use skill_write to document your GTM frameworks, campaign templates and growth strategies."
         ),
-        "tools": ["web_search", "web_browser", "file_read", "file_write", "workspace_list"],
-        # Lead role — strategic decisions benefit from Opus
-        "model_tier": "opus",
+        "tools": ["web_search", "web_browser", "file_read", "workspace_list"],
+        "model_tier": "sonnet",
         "max_iter": 20,
     },
     "content_writer": {
@@ -98,7 +102,7 @@ AGENT_TEMPLATES: dict[str, dict] = {
             "landing pages and documentation that rank on search engines and engage readers. "
             "Use skill_write to document your SEO methodologies, content templates and editorial guidelines."
         ),
-        "tools": ["web_search", "web_browser", "file_read", "file_write", "workspace_list"],
+        "tools": ["web_search", "web_browser", "file_read", "workspace_list"],
     },
     "social_media_manager": {
         "title": "Social Media Manager",
@@ -109,7 +113,7 @@ AGENT_TEMPLATES: dict[str, dict] = {
             "for LinkedIn, Twitter/X and other platforms to build community and drive brand awareness. "
             "Use skill_write to document your content calendar templates, voice guidelines and platform strategies."
         ),
-        "tools": ["web_search", "web_browser", "image_generation", "file_read", "file_write", "workspace_list"],
+        "tools": ["web_search", "web_browser", "image_generation", "file_read", "workspace_list"],
     },
     # --- BUSINESS TEAM ---
     "finance_analyst": {
@@ -120,9 +124,12 @@ AGENT_TEMPLATES: dict[str, dict] = {
             "You are a startup finance expert who can build financial models, track KPIs and "
             "help founders make sound financial decisions with limited resources. "
             "You download financial documents and store models in your workspace. "
+            "You ALWAYS cite your sources: every number in your analysis must reference a real document, URL or dataset. "
+            "Use file_write only for workspace models, scripts or scratch files. "
+            "Use task_deliverable_write for final task outputs that should be attached to the task. "
             "Use skill_write to document financial modeling approaches, KPI frameworks and reporting templates."
         ),
-        "tools": ["web_search", "code_execution", "file_read", "file_write", "workspace_shell", "workspace_list"],
+        "tools": ["web_search", "web_browser", "code_execution", "file_read", "file_write", "workspace_shell", "workspace_list"],
     },
     "product_designer": {
         "title": "Product Designer",
@@ -133,7 +140,7 @@ AGENT_TEMPLATES: dict[str, dict] = {
             "wireframes and design systems that balance beauty with usability. "
             "Use skill_write to document your design principles, component libraries and UX research methodologies."
         ),
-        "tools": ["web_search", "web_browser", "image_generation", "file_read", "file_write", "workspace_list"],
+        "tools": ["web_search", "web_browser", "image_generation", "file_read", "workspace_list"],
     },
 }
 

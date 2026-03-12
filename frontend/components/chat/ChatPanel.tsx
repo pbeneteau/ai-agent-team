@@ -1,293 +1,494 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { Send, Bot, User, Loader2, Paperclip, FileText, Trash2, ChevronDown, ChevronUp, X, BookOpen } from "lucide-react";
+import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BookOpenText, FileText, Loader2, Send, X } from "lucide-react";
+
+import { ChatHomeState } from "@/components/chat/ChatHomeState";
+import { ChatMessageBubble } from "@/components/chat/ChatMessageBubble";
+import { ChatSurfaceHeader } from "@/components/chat/ChatSurfaceHeader";
+import { ChatWorkspaceSidebar } from "@/components/chat/ChatWorkspaceSidebar";
+import type { ChatPanelMode } from "@/components/chat/chat-shell";
+import {
+  buildPendingRequestMeta,
+  createChatMessage,
+  isSeedHistory,
+  normalizeChatHistory,
+  shouldHoldStreamingPreview,
+  type ChatMessage,
+  type ChatMessageSeed,
+  type ChatPendingRequest,
+} from "@/components/chat/chat-streaming";
+import {
+  createInitialPlanState,
+  planReducer,
+  type PlanUiAction,
+  type PlanUiState,
+} from "@/components/chat/plan-state";
+import { UniversalPlanPanel } from "@/components/chat/UniversalPlanPanel";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { WSClient, createChatWS, createTeamBuilderWS } from "@/lib/websocket";
-import { api, Document } from "@/lib/api";
+import { api, type Document } from "@/lib/api";
+import { createChatWS, type ChatWSMessage, type WSClient } from "@/lib/websocket";
 import { cn } from "@/lib/utils";
-
-interface Message {
-  role: "user" | "assistant" | "error";
-  content: string;
-  streaming?: boolean;
-}
-
-type ChatMode = "chat" | "team-builder";
-
-interface FormField {
-  id: string;
-  label: string;
-  type: "text" | "textarea" | "select";
-  placeholder?: string;
-  options?: string[];
-  required?: boolean;
-}
-
-interface PlanCard {
-  title: string;
-  description?: string;
-  fields: FormField[];
-}
 
 interface ChatPanelProps {
   onTaskCreated?: (task: unknown) => void;
+  onTeamCreated?: (result: unknown) => void;
+  storageKey?: string;
+  initialMessages?: ChatMessageSeed[];
+  mode?: ChatPanelMode;
+  inputPlaceholder?: string;
+  title?: string;
+  description?: string;
+  contextLabel?: string;
 }
 
-function extractPlanCard(content: string): PlanCard | null {
-  const match = content.match(/```json\s*\n([\s\S]*?)\n```/);
-  if (!match) return null;
+const MAX_STORED = 60;
+const DEFAULT_MESSAGES: ChatMessageSeed[] = [
+  {
+    role: "assistant",
+    content:
+      "Hi! I’m Alex. I can scope the work, structure the team, and turn your context into explicit next actions. Where would you like to start?",
+  },
+];
+
+function loadHistory(storageKey: string, fallback: ChatMessageSeed[]): ChatMessage[] {
+  if (typeof window === "undefined") {
+    return fallback.map((message) => createChatMessage(message));
+  }
   try {
-    const parsed = JSON.parse(match[1]);
-    if (parsed.action === "gather_info" && Array.isArray(parsed.fields)) {
-      return { title: parsed.title || "Informations requises", description: parsed.description, fields: parsed.fields };
+    const raw = localStorage.getItem(storageKey);
+    if (raw) {
+      return normalizeChatHistory(JSON.parse(raw), fallback);
     }
   } catch {}
-  return null;
+  return fallback.map((message) => createChatMessage(message));
 }
 
-const STORAGE_KEY = "alex_chat_history";
-const MAX_STORED = 60;
-const DEFAULT_MESSAGES: Message[] = [{
-  role: "assistant",
-  content: "Bonjour ! Je suis Alex, votre associé IA. Je suis là pour vous aider à construire et gérer votre équipe. Commencez par me parler de votre projet — qu'est-ce que vous créez ?",
-}];
-
-function loadHistory(): Message[] {
+function saveHistory(storageKey: string, messages: ChatMessage[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as Message[];
-  } catch {}
-  return DEFAULT_MESSAGES;
-}
-
-function saveHistory(messages: Message[]) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(messages.slice(-MAX_STORED)));
+    localStorage.setItem(storageKey, JSON.stringify(messages.slice(-MAX_STORED)));
   } catch {}
 }
 
-export function ChatPanel({ onTaskCreated }: ChatPanelProps) {
-  const [messages, setMessages] = useState<Message[]>(DEFAULT_MESSAGES);
-  const [historyLoaded, setHistoryLoaded] = useState(false);
+export function ChatPanel({
+  onTaskCreated,
+  onTeamCreated,
+  storageKey = "alex_chat_history",
+  initialMessages = DEFAULT_MESSAGES,
+  mode = "chat",
+  inputPlaceholder = "Write to Alex… (@ to cite a document, Enter to send)",
+  title = "Alex",
+  description = "Scoping and orchestration surface for turning a need into an explicit plan, useful sources, and a clear next action.",
+  contextLabel = "Primary orchestration",
+}: ChatPanelProps) {
+  const [messages, setMessages] = useState<ChatMessage[]>(() => loadHistory(storageKey, initialMessages));
+  const [streamingMessage, setStreamingMessage] = useState<ChatMessage | null>(null);
   const [input, setInput] = useState("");
   const [isConnected, setIsConnected] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [mode, setMode] = useState<ChatMode>("chat");
-  const [planCard, setPlanCard] = useState<PlanCard | null>(null);
-  const [planValues, setPlanValues] = useState<Record<string, string>>({});
+  const [planState, setPlanState] = useState<PlanUiState>(createInitialPlanState);
   const [documents, setDocuments] = useState<Document[]>([]);
-  const [isUploading, setIsUploading] = useState(false);
   const [showDocs, setShowDocs] = useState(false);
-  const [isDragging, setIsDragging] = useState(false);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [taggedDocs, setTaggedDocs] = useState<Document[]>([]);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [pendingRequest, setPendingRequest] = useState<ChatPendingRequest | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const wsRef = useRef<WSClient | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const wsRef = useRef<WSClient<ChatWSMessage> | null>(null);
+  const scrollViewportRef = useRef<HTMLDivElement>(null);
+  const streamingMessageRef = useRef<ChatMessage | null>(null);
+  const shouldAutoScrollRef = useRef(true);
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
 
   const loadDocuments = useCallback(() => {
     api.getDocuments().then(setDocuments).catch(() => {});
   }, []);
 
+  const appendUserMessage = useCallback(
+    (content: string) => {
+      const userMessage = createChatMessage({ role: "user", content });
+      setMessages((prev) => (isSeedHistory(prev, initialMessages) ? [userMessage] : [...prev, userMessage]));
+    },
+    [initialMessages],
+  );
+
+  const transitionPlan = useCallback((action: PlanUiAction) => {
+    setPlanState((current) => planReducer(current, action));
+  }, []);
+
+  const resetConversation = useCallback(() => {
+    setMessages(initialMessages.map((message) => createChatMessage(message)));
+    setStreamingMessage(null);
+    streamingMessageRef.current = null;
+    setPendingRequest(null);
+    setIsStreaming(false);
+    setInput("");
+    setTaggedDocs([]);
+    setMentionQuery(null);
+    setShowDocs(false);
+    transitionPlan({ type: "reset" });
+    shouldAutoScrollRef.current = true;
+    try {
+      localStorage.removeItem(storageKey);
+    } catch {}
+  }, [initialMessages, storageKey, transitionPlan]);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior) => {
+    const viewport = scrollViewportRef.current;
+    if (!viewport) {
+      return;
+    }
+    viewport.scrollTo({ top: viewport.scrollHeight, behavior });
+  }, []);
+
+  const updateAutoScroll = useCallback(() => {
+    const viewport = scrollViewportRef.current;
+    if (!viewport) {
+      return;
+    }
+    const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+    shouldAutoScrollRef.current = distanceFromBottom < 96;
+  }, []);
+
+  const flushStreamingMessage = useCallback((options?: { interrupted?: boolean }) => {
+    const current = streamingMessageRef.current;
+    streamingMessageRef.current = null;
+    setStreamingMessage(null);
+
+    if (!current || !current.content.trim()) {
+      return;
+    }
+
+    setMessages((prev) => [
+      ...prev,
+      options?.interrupted ? { ...current, interrupted: true } : current,
+    ]);
+  }, []);
+
   useEffect(() => {
     loadDocuments();
   }, [loadDocuments]);
+
+  useEffect(() => {
+    shouldAutoScrollRef.current = true;
+    scrollViewportRef.current?.scrollTo({ top: 0, behavior: "auto" });
+  }, [mode, storageKey]);
+
+  useEffect(() => {
+    saveHistory(storageKey, messages);
+  }, [messages, storageKey]);
 
   const handleSubmitPlan = useCallback(() => {
-    if (!planCard) return;
-    const missing = planCard.fields.filter((f) => f.required && !planValues[f.id]);
-    if (missing.length) return;
-    const summary = planCard.fields
-      .map((f) => `**${f.label}** : ${planValues[f.id] || "(non renseigné)"}`)
-      .join("\n");
-    const userMsg = `Voici mes réponses pour "${planCard.title}":\n${summary}`;
-    setMessages((prev) => [...prev, { role: "user", content: userMsg }]);
-    setPlanCard(null);
-    setPlanValues({});
-    wsRef.current?.send({ type: "form_response", values: planValues, form_title: planCard.title });
-  }, [planCard, planValues]);
-
-  const uploadFile = useCallback(async (file: File) => {
-    setIsUploading(true);
-    setShowDocs(true);
-    try {
-      await api.uploadDocument(file);
-      loadDocuments();
-    } catch (err) {
-      console.error("Upload failed:", err);
-    } finally {
-      setIsUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
+    const form = planState.form;
+    if (!form) {
+      return;
     }
-  }, [loadDocuments]);
+    const missing = form.fields.filter(
+      (field) => field.required && !planState.formValues[field.id]?.trim(),
+    );
+    if (missing.length > 0) {
+      return;
+    }
+    const summary = form.fields
+      .map((field) => `${field.label}: ${planState.formValues[field.id] || "(not provided)"}`)
+      .join("\n");
+    appendUserMessage(`Here are my answers for "${form.title}":\n${summary}`);
+    setPendingRequest(buildPendingRequestMeta({ content: form.title, source: "form" }));
+    shouldAutoScrollRef.current = true;
+    wsRef.current?.send({
+      type: "form_response",
+      values: planState.formValues,
+      form_title: form.title,
+    });
+    transitionPlan({ type: "submit_form" });
+  }, [appendUserMessage, planState.form, planState.formValues, transitionPlan]);
 
-  const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) uploadFile(file);
-  }, [uploadFile]);
+  const handleConfirmPlan = useCallback(() => {
+    if (!planState.draft || !planState.sessionId) {
+      return;
+    }
+    transitionPlan({ type: "request_confirm" });
+    setPendingRequest(buildPendingRequestMeta({ content: planState.draft.title, source: "confirm" }));
+    wsRef.current?.send({
+      type: "plan_confirm",
+      session_id: planState.sessionId,
+      draft_id: planState.draft.id,
+    });
+  }, [planState.draft, planState.sessionId, transitionPlan]);
 
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(true);
-  }, []);
+  const handleCancelPlan = useCallback(() => {
+    if (planState.form && planState.phase === "form") {
+      transitionPlan({ type: "reset" });
+      return;
+    }
+    if (!planState.draft || !planState.sessionId) {
+      transitionPlan({ type: "reset" });
+      return;
+    }
+    wsRef.current?.send({
+      type: "plan_cancel",
+      session_id: planState.sessionId,
+      draft_id: planState.draft.id,
+    });
+  }, [planState.draft, planState.form, planState.phase, planState.sessionId, transitionPlan]);
 
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-  }, []);
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) uploadFile(file);
-  }, [uploadFile]);
-
-  // --- @ mention logic ---
+  const handleRevisePlan = useCallback(() => {
+    if (!planState.draft || !planState.sessionId) {
+      return;
+    }
+    const revision = planState.revisionText.trim();
+    const clarificationEntries = Object.entries(planState.clarificationValues).filter(([, value]) => value.trim());
+    const clarificationSummary =
+      clarificationEntries.length > 0
+        ? clarificationEntries.map(([field, value]) => `${field}: ${value}`).join("\n")
+        : "";
+    const message = [clarificationSummary, revision].filter(Boolean).join("\n");
+    appendUserMessage(message || "Je veux une version revisee de cette proposition.");
+    setPendingRequest(buildPendingRequestMeta({ content: revision || planState.draft.title, source: "revision" }));
+    shouldAutoScrollRef.current = true;
+    transitionPlan({ type: "revising", backendState: "discovery" });
+    wsRef.current?.send({
+      type: "plan_revise",
+      session_id: planState.sessionId,
+      draft_id: planState.draft.id,
+      content: revision,
+      clarification_values: planState.clarificationValues,
+    });
+  }, [
+    appendUserMessage,
+    planState.clarificationValues,
+    planState.draft,
+    planState.revisionText,
+    planState.sessionId,
+    transitionPlan,
+  ]);
 
   const mentionSuggestions = useMemo(() => {
-    if (mentionQuery === null) return [];
-    const q = mentionQuery.toLowerCase();
-    return documents.filter((d) => d.filename.toLowerCase().includes(q)).slice(0, 6);
-  }, [mentionQuery, documents]);
-
-  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const val = e.target.value;
-    setInput(val);
-
-    // Detect @ trigger: look at the word right before the cursor
-    const cursor = e.target.selectionStart ?? val.length;
-    const textBeforeCursor = val.slice(0, cursor);
-    const match = textBeforeCursor.match(/@([\w.\-]*)$/);
-    if (match) {
-      setMentionQuery(match[1]); // empty string = show all
-    } else {
-      setMentionQuery(null);
+    if (mentionQuery === null) {
+      return [];
     }
+    const query = mentionQuery.toLowerCase();
+    return documents.filter((document) => document.filename.toLowerCase().includes(query)).slice(0, 6);
+  }, [documents, mentionQuery]);
+
+  const requestedDocumentId = searchParams.get("doc");
+  const requestedTaggedDocument = useMemo(() => {
+    if (!requestedDocumentId) {
+      return null;
+    }
+    return documents.find((document) => document.id === requestedDocumentId) ?? null;
+  }, [documents, requestedDocumentId]);
+
+  const activeTaggedDocs = useMemo(() => {
+    if (!requestedTaggedDocument) {
+      return taggedDocs;
+    }
+    return taggedDocs.some((document) => document.id === requestedTaggedDocument.id)
+      ? taggedDocs
+      : [...taggedDocs, requestedTaggedDocument];
+  }, [requestedTaggedDocument, taggedDocs]);
+
+  const clearRequestedDocumentParam = useCallback(() => {
+    if (!requestedDocumentId) {
+      return;
+    }
+    const nextParams = new URLSearchParams(searchParams.toString());
+    nextParams.delete("doc");
+    const nextUrl = nextParams.size > 0 ? `${pathname}?${nextParams.toString()}` : pathname;
+    router.replace(nextUrl, { scroll: false });
+  }, [pathname, requestedDocumentId, router, searchParams]);
+
+  useEffect(() => {
+    if (!requestedTaggedDocument) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) {
+        return;
+      }
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    });
+  }, [requestedTaggedDocument]);
+
+  const handleInputChange = useCallback((event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = event.target.value;
+    setInput(value);
+    const cursor = event.target.selectionStart ?? value.length;
+    const textBeforeCursor = value.slice(0, cursor);
+    const match = textBeforeCursor.match(/@([\w.\-]*)$/);
+    setMentionQuery(match ? match[1] : null);
   }, []);
 
-  const selectMention = useCallback((doc: Document) => {
-    // Remove the @query text from the input
-    const cursor = textareaRef.current?.selectionStart ?? input.length;
-    const before = input.slice(0, cursor).replace(/@[\w.\-]*$/, "");
-    const after = input.slice(cursor);
-    setInput(before + after);
-    setMentionQuery(null);
-
-    // Add to tagged docs if not already there
-    setTaggedDocs((prev) =>
-      prev.find((d) => d.id === doc.id) ? prev : [...prev, doc]
-    );
-    textareaRef.current?.focus();
-  }, [input]);
+  const selectMention = useCallback(
+    (document: Document) => {
+      const cursor = textareaRef.current?.selectionStart ?? input.length;
+      const before = input.slice(0, cursor).replace(/@[\w.\-]*$/, "");
+      const after = input.slice(cursor);
+      setInput(before + after);
+      setMentionQuery(null);
+      setTaggedDocs((prev) => (prev.find((entry) => entry.id === document.id) ? prev : [...prev, document]));
+      textareaRef.current?.focus();
+    },
+    [input],
+  );
 
   const removeTaggedDoc = useCallback((id: string) => {
-    setTaggedDocs((prev) => prev.filter((d) => d.id !== id));
-  }, []);
-
-  const handleDeleteDocument = useCallback(async (id: string, filename: string) => {
-    if (!confirm(`Supprimer le document "${filename}" ? Cette action est irréversible.`)) return;
-    await api.deleteDocument(id).catch(() => {});
-    loadDocuments();
-  }, [loadDocuments]);
-
-  const [briefingDocId, setBriefingDocId] = useState<string | null>(null);
-
-  useEffect(() => {
-    setMessages(loadHistory());
-    setHistoryLoaded(true);
-  }, []);
-
-  const handleBriefAgents = useCallback(async (doc: Document) => {
-    setBriefingDocId(doc.id);
-    try {
-      await api.briefAgentsWithDocument(doc.id);
-      setMessages((prev) => [...prev, {
-        role: "assistant",
-        content: `📚 Je mets à jour le **project_context** de tous les agents avec le contenu de **${doc.filename}**. Chaque agent recevra les informations pertinentes pour son rôle dans les prochaines secondes.`,
-      }]);
-    } catch {
-      // silent
-    } finally {
-      setBriefingDocId(null);
+    setTaggedDocs((prev) => prev.filter((document) => document.id !== id));
+    if (requestedTaggedDocument?.id === id) {
+      clearRequestedDocumentParam();
     }
-  }, []);
+  }, [clearRequestedDocumentParam, requestedTaggedDocument?.id]);
 
-  // Persist messages to localStorage whenever they change
   useEffect(() => {
-    if (!historyLoaded) return;
-    saveHistory(messages.filter((m) => !m.streaming));
-  }, [historyLoaded, messages]);
-
-  // Connect/reconnect WS when mode changes
-  useEffect(() => {
-    const ws = mode === "team-builder" ? createTeamBuilderWS() : createChatWS();
+    const ws = createChatWS();
     wsRef.current = ws;
     ws.connect();
 
     const unsub = ws.onMessage((msg) => {
-      if (msg.type === "stream_start") {
-        setIsStreaming(true);
-        setMessages((prev) => [...prev, { role: "assistant", content: "", streaming: true }]);
-      } else if (msg.type === "stream_chunk") {
-        setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          if (last?.streaming) {
-            return [...prev.slice(0, -1), { ...last, content: last.content + (msg.data as string) }];
+      switch (msg.type) {
+        case "stream_start":
+          setIsStreaming(true);
+          shouldAutoScrollRef.current = true;
+          {
+            const nextMessage = createChatMessage({ role: "assistant", content: "" });
+            streamingMessageRef.current = nextMessage;
+            setStreamingMessage(nextMessage);
           }
-          return prev;
-        });
-      } else if (msg.type === "stream_end") {
-        setIsStreaming(false);
-        setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          if (last?.streaming) {
-            return [...prev.slice(0, -1), { ...last, streaming: false }];
-          }
-          return prev;
-        });
-        // After stream ends, check if the last message contains a gather_info action
-        setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          if (last?.role === "assistant") {
-            const plan = extractPlanCard(last.content);
-            if (plan) setTimeout(() => setPlanCard(plan), 100);
-          }
-          return prev;
-        });
-      } else if (msg.type === "error") {
-        setIsStreaming(false);
-        setMessages((prev) => {
-          const filtered = prev[prev.length - 1]?.streaming ? prev.slice(0, -1) : prev;
-          return [...filtered, { role: "error", content: msg.data as string }];
-        });
-      } else if (msg.type === "navigate") {
-        const to = (msg.data as { to: string }).to;
-        if (to === "team-builder") {
-          // Switch to team-builder mode inline — no extra message, Alex's response already handles the transition
-          setMode("team-builder");
+          break;
+        case "stream_chunk":
+          setStreamingMessage((current) => {
+            const nextMessage =
+              current ??
+              createChatMessage({
+                role: "assistant",
+                content: "",
+              });
+            const updated = {
+              ...nextMessage,
+              content: `${nextMessage.content}${String(msg.data ?? "")}`,
+            };
+            streamingMessageRef.current = updated;
+            return updated;
+          });
+          break;
+        case "stream_end":
+          setIsStreaming(false);
+          flushStreamingMessage();
+          setPendingRequest(null);
+          break;
+        case "plan_form": {
+          const payload = msg.data ?? {};
+          setPendingRequest(null);
+          transitionPlan({
+            type: "show_form",
+            sessionId: payload.session_id ?? null,
+            form: payload.form ?? null,
+          });
+          break;
         }
-      } else if (msg.type === "team_confirmed") {
-        setMessages((prev) => [...prev, {
-          role: "assistant",
-          content: "✅ Proposition d'équipe validée. Confirmation de la création…",
-        }]);
-        wsRef.current?.send({ type: "confirm_team" });
-      } else if (msg.type === "team_created") {
-        setMode("chat");
-        setPlanCard(null);
-        setMessages((prev) => [...prev, {
-          role: "assistant",
-          content: "🎉 Équipe créée avec succès ! Vos agents sont en cours d'initialisation. Vous pouvez les voir dans **Mon Équipe**.",
-        }]);
-      } else if (msg.type === "task_created" && onTaskCreated) {
-        onTaskCreated(msg.data);
+        case "plan_preview": {
+          const payload = msg.data ?? {};
+          setPendingRequest(null);
+          transitionPlan({
+            type: "show_draft",
+            sessionId: payload.session_id ?? null,
+            backendState: payload.state ?? null,
+            draft: payload.draft ?? null,
+            error: payload.last_error ?? null,
+          });
+          break;
+        }
+        case "plan_revising":
+          setPendingRequest(null);
+          transitionPlan({ type: "revising", backendState: "discovery" });
+          break;
+        case "plan_executing":
+          setPendingRequest(null);
+          transitionPlan({ type: "executing", backendState: "executing" });
+          break;
+        case "plan_completed": {
+          const payload = msg.data ?? {};
+          setPendingRequest(null);
+          transitionPlan({ type: "completed" });
+          if (payload.kind === "team" && onTeamCreated) {
+            onTeamCreated(payload.result);
+          }
+          setMessages((prev) => [
+            ...prev,
+            createChatMessage({
+              role: "assistant",
+              content:
+                payload.kind === "team"
+                  ? "The team has been created. I am now starting its initialization."
+                  : "The task has been created and launched.",
+            }),
+          ]);
+          shouldAutoScrollRef.current = true;
+          break;
+        }
+        case "plan_cancelled":
+          setPendingRequest(null);
+          transitionPlan({ type: "cancelled", backendState: "cancelled" });
+          break;
+        case "plan_failed": {
+          const payload = msg.data ?? {};
+          setPendingRequest(null);
+          transitionPlan({
+            type: "failed",
+            backendState: payload.state ?? null,
+            error: payload.error ?? "Unknown error",
+            draft: payload.draft ?? undefined,
+          });
+          break;
+        }
+        case "navigate":
+          if (msg.data?.to === "team-builder") {
+            router.push("/team-builder");
+          }
+          break;
+        case "error":
+          setIsStreaming(false);
+          flushStreamingMessage({ interrupted: true });
+          setPendingRequest(null);
+          setMessages((prev) => {
+            return [
+              ...prev,
+              createChatMessage({ role: "error", content: String(msg.data ?? "Unknown error") }),
+            ];
+          });
+          break;
+        case "team_created":
+          if (onTeamCreated) {
+            onTeamCreated(msg.data);
+          }
+          setMessages((prev) => [
+            ...prev,
+            createChatMessage({
+              role: "assistant",
+              content: "Team created successfully. You can find it in Teams & Agents.",
+            }),
+          ]);
+          shouldAutoScrollRef.current = true;
+          break;
+        case "task_created":
+          if (onTaskCreated) {
+            onTaskCreated(msg.data);
+          }
+          break;
+        default:
+          break;
       }
     });
 
@@ -300,364 +501,276 @@ export function ChatPanel({ onTaskCreated }: ChatPanelProps) {
       clearInterval(checkConnection);
       ws.disconnect();
     };
-  }, [mode, onTaskCreated]);
+  }, [flushStreamingMessage, onTaskCreated, onTeamCreated, router, transitionPlan]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    if (!shouldAutoScrollRef.current) {
+      return;
+    }
+    scrollToBottom(streamingMessage ? "auto" : "smooth");
+  }, [messages, planState.draft, planState.form, scrollToBottom, showDocs, streamingMessage]);
 
   const sendMessage = useCallback(() => {
     const content = input.trim();
-    if (!content || isStreaming) return;
-
-    const displayContent = taggedDocs.length
-      ? `${taggedDocs.map((d) => `@${d.filename}`).join(" ")} ${content}`
+    if (!content || isStreaming) {
+      return;
+    }
+    const displayContent = activeTaggedDocs.length > 0
+      ? `${activeTaggedDocs.map((document) => `@${document.filename}`).join(" ")} ${content}`
       : content;
-
-    setMessages((prev) => [...prev, { role: "user", content: displayContent }]);
+    appendUserMessage(displayContent);
+    setPendingRequest(buildPendingRequestMeta({ content, taggedDocumentCount: activeTaggedDocs.length }));
+    shouldAutoScrollRef.current = true;
     wsRef.current?.send({
       type: "chat",
       content,
-      tagged_doc_ids: taggedDocs.map((d) => d.id),
+      tagged_doc_ids: activeTaggedDocs.map((document) => document.id),
     });
     setInput("");
     setTaggedDocs([]);
     setMentionQuery(null);
-  }, [input, isStreaming, taggedDocs]);
+    clearRequestedDocumentParam();
+  }, [activeTaggedDocs, appendUserMessage, clearRequestedDocumentParam, input, isStreaming]);
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
-  };
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        sendMessage();
+      }
+    },
+    [sendMessage],
+  );
+
+  const showPlanPanel = planState.form !== null || planState.draft !== null;
+  const showWaitingState = streamingMessage ? shouldHoldStreamingPreview(streamingMessage.content) : true;
+  const showHomeState =
+    !showPlanPanel &&
+    !streamingMessage &&
+    (messages.length === 0 || isSeedHistory(messages, initialMessages));
+  const conversationStatusLabel = showPlanPanel
+    ? "Plan in progress"
+    : isStreaming
+      ? "Response in progress"
+      : showHomeState
+        ? "Home"
+        : "Active conversation";
 
   return (
-    <div
-      className={cn("flex flex-col h-full relative", isDragging && "ring-2 ring-inset ring-indigo-400")}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-    >
-      {/* Always-mounted hidden file input — must not be inside a conditional block */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".pdf,.docx,.txt,.md,.csv,.json,.yaml,.yml"
-        className="hidden"
-        onChange={handleFileInputChange}
-      />
+    <div className={cn("relative flex h-full min-h-0 flex-col overflow-hidden bg-[var(--ops-canvas)]")}>
+      <div className="min-h-0 flex-1 p-4 md:p-5">
+        <div className="mx-auto flex h-full max-w-[1600px] overflow-hidden rounded-[30px] border border-[var(--ops-border)] bg-[var(--ops-surface)] shadow-[var(--ops-shadow)] backdrop-blur">
+          <ChatWorkspaceSidebar
+            mode={mode}
+            title={title}
+            description={description}
+            contextLabel={contextLabel}
+            showDocs={showDocs}
+            documents={documents}
+            attachedDocuments={activeTaggedDocs}
+          />
 
-      {/* Drag overlay */}
-      {isDragging && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-indigo-50/90 border-2 border-dashed border-indigo-400 rounded-lg pointer-events-none">
-          <div className="text-center">
-            <Paperclip className="w-10 h-10 text-indigo-500 mx-auto mb-2" />
-            <p className="text-sm font-medium text-indigo-700">Déposez le fichier ici</p>
-            <p className="text-xs text-indigo-500">PDF, DOCX, TXT, MD, CSV…</p>
-          </div>
-        </div>
-      )}
-      {/* Status bar */}
-      <div className="flex items-center justify-between gap-2 px-4 py-2 border-b bg-slate-50">
-        <div className="flex items-center gap-2">
-          <div className={cn("w-2 h-2 rounded-full", isConnected ? "bg-green-500" : "bg-red-400")} />
-          <span className="text-xs text-muted-foreground">
-            {isConnected ? "Connecté à Alex" : "Reconnexion…"}
-          </span>
-          {mode === "team-builder" && (
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 text-xs font-medium">
-              Mode création d&apos;équipe
-              <button onClick={() => setMode("chat")} className="hover:text-violet-900 ml-0.5">
-                <X className="w-3 h-3" />
-              </button>
-            </span>
-          )}
-        </div>
-        <button
-          onClick={() => setShowDocs((v) => !v)}
-          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <FileText className="w-3.5 h-3.5" />
-          {documents.length > 0 ? `${documents.length} document(s)` : "Documents"}
-          {showDocs ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-        </button>
-      </div>
+          <div className="flex min-w-0 flex-1 flex-col bg-[radial-gradient(circle_at_top,rgba(255,255,253,0.98),rgba(247,244,237,0.9))]">
+            <ChatSurfaceHeader
+              mode={mode}
+              contextLabel={conversationStatusLabel}
+              isConnected={isConnected}
+              showDocs={showDocs}
+              documentCount={documents.length}
+              attachedDocumentCount={activeTaggedDocs.length}
+              onToggleDocs={() => setShowDocs((value) => !value)}
+              onResetConversation={resetConversation}
+            />
 
-      {/* Documents panel */}
-      {showDocs && (
-        <div className="border-b bg-slate-50/80 px-4 py-3 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-600">Documents partagés avec Alex</span>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 text-xs gap-1.5"
-              disabled={isUploading}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              {isUploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Paperclip className="w-3.5 h-3.5" />}
-              {isUploading ? "Envoi…" : "Ajouter un fichier"}
-            </Button>
-          </div>
-          {documents.length === 0 ? (
-            <p className="text-xs text-muted-foreground italic">
-              Aucun document — glissez un PDF, DOCX ou texte pour donner du contexte à Alex.
-            </p>
-          ) : (
-            <div className="space-y-1">
-              {documents.map((doc) => (
-                <div key={doc.id} className="flex items-center justify-between gap-2 rounded-md bg-white border px-3 py-1.5 text-xs">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <FileText className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
-                    <span className="truncate font-medium">{doc.filename}</span>
-                    <span className="text-muted-foreground shrink-0">
-                      {doc.chunk_count} chunk{doc.chunk_count !== 1 ? "s" : ""}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      onClick={() => handleBriefAgents(doc)}
-                      disabled={briefingDocId === doc.id}
-                      title="Partager comme contexte projet — met à jour le project_context de tous les agents"
-                      className="text-muted-foreground hover:text-violet-600 transition-colors disabled:opacity-40"
-                    >
-                      {briefingDocId === doc.id
-                        ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        : <BookOpen className="w-3.5 h-3.5" />}
-                    </button>
-                    <button
-                      onClick={() => handleDeleteDocument(doc.id, doc.filename)}
-                      className="text-muted-foreground hover:text-red-500 transition-colors"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto min-h-0 p-4">
-        <div className="space-y-4 max-w-3xl mx-auto">
-          {messages.map((msg, i) => {
-            if (msg.role === "error") {
-              return (
-                <div key={i} className="flex justify-center">
-                  <div className="flex items-start gap-2 max-w-[90%] rounded-xl px-4 py-3 bg-red-50 border border-red-200 text-red-700 text-sm">
-                    <span className="shrink-0 mt-0.5">⚠️</span>
-                    <span>{msg.content}</span>
-                  </div>
-                </div>
-              );
-            }
-            return (
-              <div
-                key={i}
-                className={cn("flex gap-3", msg.role === "user" ? "justify-end" : "justify-start")}
-              >
-                {msg.role === "assistant" && (
-                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center flex-shrink-0 mt-1">
-                    <Bot className="w-4 h-4 text-white" />
-                  </div>
-                )}
-                <div
-                  className={cn(
-                    "max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed",
-                    msg.role === "user"
-                      ? "bg-indigo-600 text-white rounded-tr-sm"
-                      : "bg-white border border-slate-200 text-slate-800 rounded-tl-sm shadow-sm"
-                  )}
-                >
-                  <MessageContent content={msg.content} />
-                  {msg.streaming && (
-                    <span className="inline-block w-1 h-4 ml-1 bg-current animate-pulse rounded" />
-                  )}
-                </div>
-                {msg.role === "user" && (
-                  <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center flex-shrink-0 mt-1">
-                    <User className="w-4 h-4 text-slate-600" />
-                  </div>
-                )}
-              </div>
-            );
-          })}
-          {/* Plan card — dynamic form when Alex needs structured input */}
-          {planCard && (
-            <div className="mx-auto max-w-2xl rounded-2xl border border-violet-200 bg-violet-50 p-5 space-y-4 shadow-sm">
-              <div className="flex items-start gap-3">
-                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center shrink-0">
-                  <Bot className="w-4 h-4 text-white" />
-                </div>
-                <div>
-                  <p className="font-semibold text-slate-800 text-sm">{planCard.title}</p>
-                  {planCard.description && <p className="text-xs text-slate-500 mt-0.5">{planCard.description}</p>}
-                </div>
-              </div>
-              <div className="space-y-3">
-                {planCard.fields.map((field) => (
-                  <div key={field.id}>
-                    <label className="block text-xs font-medium text-slate-700 mb-1">
-                      {field.label}{field.required && <span className="text-red-500 ml-0.5">*</span>}
-                    </label>
-                    {field.type === "select" && field.options ? (
-                      <select
-                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
-                        value={planValues[field.id] || ""}
-                        onChange={(e) => setPlanValues((v) => ({ ...v, [field.id]: e.target.value }))}
-                      >
-                        <option value="">Choisir…</option>
-                        {field.options.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
-                      </select>
-                    ) : field.type === "textarea" ? (
-                      <textarea
-                        rows={3}
-                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-violet-400"
-                        placeholder={field.placeholder}
-                        value={planValues[field.id] || ""}
-                        onChange={(e) => setPlanValues((v) => ({ ...v, [field.id]: e.target.value }))}
-                      />
-                    ) : (
-                      <input
-                        type="text"
-                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
-                        placeholder={field.placeholder}
-                        value={planValues[field.id] || ""}
-                        onChange={(e) => setPlanValues((v) => ({ ...v, [field.id]: e.target.value }))}
-                      />
-                    )}
-                  </div>
-                ))}
-              </div>
-              <div className="flex gap-2 justify-end">
-                <button
-                  onClick={() => { setPlanCard(null); setPlanValues({}); }}
-                  className="px-4 py-2 rounded-lg text-xs font-medium text-slate-600 hover:bg-white border border-slate-200 transition-colors"
-                >
-                  Annuler
-                </button>
-                <button
-                  onClick={handleSubmitPlan}
-                  className="px-4 py-2 rounded-lg text-xs font-medium bg-violet-600 text-white hover:bg-violet-700 transition-colors"
-                >
-                  Envoyer
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div ref={bottomRef} />
-        </div>
-      </div>
-
-      {/* Input */}
-      <div className="border-t p-4 bg-white">
-        <div className="max-w-3xl mx-auto space-y-2">
-
-          {/* Tagged document chips */}
-          {taggedDocs.length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
-              {taggedDocs.map((doc) => (
-                <span
-                  key={doc.id}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 text-xs font-medium"
-                >
-                  <FileText className="w-3 h-3" />
-                  {doc.filename}
-                  <button onClick={() => removeTaggedDoc(doc.id)} className="hover:text-indigo-900 ml-0.5">
-                    <X className="w-3 h-3" />
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-
-          <div className="flex gap-2">
-            <div className="flex-1 relative">
-
-              {/* @ mention dropdown */}
-              {mentionQuery !== null && mentionSuggestions.length > 0 && (
-                <div className="absolute bottom-full mb-1 left-0 w-72 bg-white border border-slate-200 rounded-lg shadow-lg z-50 overflow-hidden">
-                  <div className="px-3 py-1.5 text-[10px] font-semibold text-slate-400 uppercase tracking-wider border-b">
-                    Documents
-                  </div>
-                  {mentionSuggestions.map((doc) => (
-                    <button
-                      key={doc.id}
-                      onMouseDown={(e) => { e.preventDefault(); selectMention(doc); }}
-                      className="w-full flex items-center gap-2.5 px-3 py-2 text-sm hover:bg-indigo-50 text-left transition-colors"
-                    >
-                      <FileText className="w-4 h-4 text-indigo-500 shrink-0" />
-                      <span className="truncate font-medium">{doc.filename}</span>
-                      <span className="text-xs text-slate-400 shrink-0 ml-auto">
-                        {doc.chunk_count}c
-                      </span>
-                    </button>
-                  ))}
-                  {documents.length === 0 && (
-                    <p className="px-3 py-2 text-xs text-slate-400 italic">
-                      Aucun document — uploadez-en un avec le trombone.
-                    </p>
-                  )}
-                </div>
-              )}
-              {mentionQuery !== null && documents.length === 0 && (
-                <div className="absolute bottom-full mb-1 left-0 w-72 bg-white border border-slate-200 rounded-lg shadow-lg z-50 overflow-hidden">
-                  <div className="px-3 py-2 text-xs text-slate-400 italic">
-                    Aucun document disponible — uploadez-en un avec 📎.
-                  </div>
-                </div>
-              )}
-
-              <Textarea
-                ref={textareaRef}
-                value={input}
-                onChange={handleInputChange}
-                onKeyDown={(e) => {
-                  if (mentionQuery !== null && mentionSuggestions.length > 0) {
-                    if (e.key === "Escape") { e.preventDefault(); setMentionQuery(null); return; }
-                    if (e.key === "Enter" && mentionSuggestions.length > 0) {
-                      e.preventDefault(); selectMention(mentionSuggestions[0]); return;
+            {showPlanPanel ? (
+              <div className="border-b border-black/5 bg-white/45 px-5 py-5 md:px-8">
+                <div className="mx-auto max-w-4xl">
+                  <UniversalPlanPanel
+                    phase={planState.phase}
+                    form={planState.form}
+                    formValues={planState.formValues}
+                    draft={planState.draft}
+                    error={planState.error}
+                    backendState={planState.backendState}
+                    revisionText={planState.revisionText}
+                    clarificationValues={planState.clarificationValues}
+                    documentLabelsById={Object.fromEntries(documents.map((document) => [document.id, document.filename]))}
+                    onFieldChange={(fieldId, value) => transitionPlan({ type: "update_form_value", fieldId, value })}
+                    onFormCancel={() => transitionPlan({ type: "reset" })}
+                    onFormSubmit={handleSubmitPlan}
+                    onRevisionTextChange={(value) => transitionPlan({ type: "set_revision_text", value })}
+                    onClarificationValueChange={(fieldPath, value) =>
+                      transitionPlan({ type: "update_clarification_value", fieldPath, value })
                     }
-                  }
-                  handleKeyDown(e);
-                }}
-                placeholder="Écrivez à Alex… (@ pour citer un document, Entrée pour envoyer)"
-                className="resize-none min-h-[60px] max-h-[160px] pr-10"
-                disabled={isStreaming}
-              />
-              <button
-                title="Joindre un document"
-                disabled={isUploading}
-                onClick={() => fileInputRef.current?.click()}
-                className="absolute bottom-2 right-2 text-muted-foreground hover:text-indigo-600 transition-colors disabled:opacity-40"
-              >
-                {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
-              </button>
-            </div>
-            <Button
-              onClick={sendMessage}
-              disabled={!input.trim() || isStreaming || !isConnected}
-              className="self-end bg-indigo-600 hover:bg-indigo-700"
-            >
-              {isStreaming ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
+                    onConfirm={handleConfirmPlan}
+                    onCancel={handleCancelPlan}
+                    onRevise={handleRevisePlan}
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            <div className="relative min-h-0 flex-1">
+              {showHomeState ? (
+                <ChatHomeState
+                  mode={mode}
+                  title={title}
+                  description={description}
+                  onSelectPrompt={(prompt) => {
+                    setInput(prompt);
+                    setMentionQuery(null);
+                    requestAnimationFrame(() => {
+                      const textarea = textareaRef.current;
+                      if (!textarea) {
+                        return;
+                      }
+                      textarea.focus();
+                      textarea.scrollTop = 0;
+                      textarea.scrollLeft = 0;
+                      textarea.setSelectionRange(prompt.length, prompt.length);
+                    });
+                  }}
+                />
               ) : (
-                <Send className="w-4 h-4" />
+                <div ref={scrollViewportRef} onScroll={updateAutoScroll} className="absolute inset-0 overflow-y-auto">
+                  <div className="mx-auto flex min-h-full max-w-4xl flex-col gap-6 px-6 py-8 md:px-10">
+                    {messages.map((message) => (
+                      <ChatMessageBubble key={message.id} message={message} />
+                    ))}
+
+                    {streamingMessage ? (
+                      <ChatMessageBubble
+                        message={streamingMessage}
+                        isStreaming
+                        pendingRequest={pendingRequest ?? buildPendingRequestMeta({ content: "" })}
+                        showWaitingState={showWaitingState}
+                      />
+                    ) : null}
+                  </div>
+                </div>
               )}
-            </Button>
+            </div>
+
+            <div className="border-t border-black/5 bg-white/72 px-4 py-4 backdrop-blur md:px-6">
+              <div className="mx-auto max-w-4xl space-y-3">
+                {activeTaggedDocs.length > 0 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {activeTaggedDocs.map((document) => (
+                      <Badge
+                        key={document.id}
+                        variant="secondary"
+                        className="h-auto gap-1 rounded-full bg-primary/8 px-2.5 py-1 text-primary"
+                      >
+                        <FileText className="size-3" />
+                        {document.filename}
+                        <button onClick={() => removeTaggedDoc(document.id)} className="rounded-full hover:text-primary/80">
+                          <X className="size-3" />
+                        </button>
+                      </Badge>
+                    ))}
+                  </div>
+                ) : null}
+
+                <div className="relative">
+                  {mentionQuery !== null && mentionSuggestions.length > 0 ? (
+                    <div className="absolute bottom-full left-0 z-30 mb-3 w-full max-w-sm">
+                      <Card size="sm" className="gap-0 border border-black/6 bg-white shadow-[0_24px_40px_-32px_rgba(15,23,42,0.28)] ring-0">
+                        <div className="border-b border-black/5 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                          Documents
+                        </div>
+                        <div className="p-1">
+                          {mentionSuggestions.map((document) => (
+                            <button
+                              key={document.id}
+                              onMouseDown={(event) => {
+                                event.preventDefault();
+                                selectMention(document);
+                              }}
+                              className="flex w-full items-center gap-2.5 rounded-2xl px-3 py-2 text-left text-sm transition-colors hover:bg-muted/70"
+                            >
+                              <FileText className="size-4 shrink-0 text-primary" />
+                              <span className="truncate font-medium text-foreground">{document.filename}</span>
+                              <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+                                {document.chunk_count}c
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      </Card>
+                    </div>
+                  ) : null}
+
+                  {mentionQuery !== null && documents.length === 0 ? (
+                    <div className="absolute bottom-full left-0 z-30 mb-3 w-full max-w-sm">
+                      <Card size="sm" className="bg-white shadow-[0_24px_40px_-32px_rgba(15,23,42,0.28)] ring-0">
+                        <div className="space-y-2 px-3 py-3 text-sm text-muted-foreground">
+                          <p>No document available. Open the context hub to add or manage sources.</p>
+                          <Link href="/project-context" className="inline-flex text-xs font-medium text-primary hover:underline">
+                            Go to project context
+                          </Link>
+                        </div>
+                      </Card>
+                    </div>
+                  ) : null}
+
+                  <div className="overflow-hidden rounded-[28px] border border-black/6 bg-white shadow-[0_22px_40px_-34px_rgba(15,23,42,0.28)]">
+                    <Textarea
+                      ref={textareaRef}
+                      value={input}
+                      onChange={handleInputChange}
+                      onKeyDown={(event) => {
+                        if (mentionQuery !== null && mentionSuggestions.length > 0) {
+                          if (event.key === "Escape") {
+                            event.preventDefault();
+                            setMentionQuery(null);
+                            return;
+                          }
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            selectMention(mentionSuggestions[0]);
+                            return;
+                          }
+                        }
+                        handleKeyDown(event);
+                      }}
+                      placeholder={inputPlaceholder}
+                      className="max-h-[220px] min-h-[104px] resize-none border-0 bg-transparent px-5 pb-16 pt-5 text-sm leading-6 shadow-none focus-visible:border-0 focus-visible:ring-0"
+                      disabled={isStreaming}
+                    />
+
+                    <div className="flex flex-col gap-3 border-t border-black/5 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                        <span>@ to cite a document</span>
+                        <span>Documents and broadcasts live in Project Context</span>
+                        <span>Enter to send</span>
+                        <span>Shift + Enter for a new line</span>
+                      </div>
+
+                      <div className="flex items-center justify-end gap-2">
+                        <Link href="/project-context">
+                          <Button variant="ghost" size="sm" className="rounded-2xl gap-2">
+                            <BookOpenText className="size-4" />
+                            Project context
+                          </Button>
+                        </Link>
+
+                        <Button
+                          onClick={sendMessage}
+                          disabled={!input.trim() || isStreaming || !isConnected}
+                          className="rounded-full px-4 shadow-sm"
+                        >
+                          {isStreaming ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+                          {isStreaming ? "Alex is responding…" : "Send"}
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
     </div>
   );
-}
-
-function MessageContent({ content }: { content: string }) {
-  // Strip JSON code blocks from display
-  const cleaned = content.replace(/```json[\s\S]*?```/g, "").trim();
-  return <span className="whitespace-pre-wrap">{cleaned || content}</span>;
 }

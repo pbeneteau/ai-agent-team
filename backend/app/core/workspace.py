@@ -24,7 +24,7 @@ import subprocess
 from datetime import datetime, UTC
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 import logging
 
 from app.config import get_settings
@@ -32,6 +32,22 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 SHARED_WORKSPACE_ID = "shared"
+
+
+def resolve_workspace_root(workspace_path: str | Path) -> Path:
+    return Path(workspace_path).expanduser().resolve()
+
+
+def resolve_workspace_path(workspace_root: str | Path, relative_path: str) -> Path:
+    """Resolve a relative path safely inside a workspace root."""
+    root = resolve_workspace_root(workspace_root)
+    relative = (relative_path or ".").strip() or "."
+    target = (root / relative).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise PermissionError(f"Path traversal attempt blocked: {relative_path}") from exc
+    return target
 
 
 class AgentWorkspace:
@@ -93,7 +109,13 @@ class AgentWorkspace:
 
     # --- Skills helpers ---
 
-    def write_skill(self, skill_name: str, content: str, author: str = "self") -> Path:
+    def write_skill(
+        self,
+        skill_name: str,
+        content: str,
+        author: str = "self",
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> Path:
         """Write or overwrite a skill Markdown file.
         Args:
             skill_name: Slug-style name (e.g. 'python_backend', 'seo_strategy')
@@ -102,11 +124,19 @@ class AgentWorkspace:
         """
         safe_name = skill_name.replace(" ", "_").replace("/", "_").lower()
         path = self.skills / f"{safe_name}.md"
+        extra_lines = ""
+        if metadata:
+            extra_lines = "".join(
+                f"  {key}: {value}\n"
+                for key, value in metadata.items()
+                if value is not None
+            )
         header = (
             f"<!--\n"
             f"  skill: {safe_name}\n"
             f"  author: {author}\n"
             f"  updated: {datetime.now(UTC).isoformat()}Z\n"
+            f"{extra_lines}"
             f"-->\n\n"
         )
         path.write_text(header + content, encoding="utf-8")
@@ -160,10 +190,7 @@ class AgentWorkspace:
 
     def path(self, relative: str) -> Path:
         """Resolve a relative path safely within the workspace (no traversal)."""
-        resolved = (self.root / relative).resolve()
-        if not str(resolved).startswith(str(self.root.resolve())):
-            raise PermissionError(f"Path traversal attempt blocked: {relative}")
-        return resolved
+        return resolve_workspace_path(self.root, relative)
 
     # --- File operations ---
 
