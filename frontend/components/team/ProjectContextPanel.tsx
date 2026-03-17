@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { ChevronDown, ChevronUp, FolderOpen, Loader2, PencilLine, Save, Send, X } from "lucide-react";
 
 import { api, type ProjectBrief, type ProjectContext, type ProjectContextState } from "@/lib/api";
+import { StatBlock } from "@/components/layout/StatBlock";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -155,7 +156,7 @@ function PublishedInfoBlock({
   }
 
   return (
-    <div className="space-y-2 rounded-2xl border border-black/5 bg-white px-4 py-4">
+    <div className="space-y-2 rounded-[16px] border border-[var(--ops-border)] bg-[var(--ops-surface-elevated)] px-4 py-4">
       <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{label}</p>
       {markdown && expanded ? (
         <MarkdownContent content={content} className="prose-p:my-0 prose-headings:mt-0 prose-headings:mb-2" />
@@ -187,7 +188,7 @@ function ReadOnlyInfoGrid({
 
   if (!hasValues) {
     return (
-      <div className="rounded-2xl border border-dashed border-black/8 bg-muted/30 px-4 py-6 text-sm text-muted-foreground">
+      <div className="rounded-[16px] border border-dashed border-[var(--ops-border-strong)] bg-[var(--ops-surface-muted)] px-4 py-6 text-sm text-muted-foreground">
         {emptyLabel}
       </div>
     );
@@ -218,7 +219,7 @@ function SectionCard({
   children: ReactNode;
 }) {
   return (
-    <Card className="border-black/5 bg-white/92 shadow-none">
+    <Card className="bg-[var(--ops-surface-elevated)] shadow-none">
       <CardContent className="space-y-4 p-5">
         <div className="space-y-1">
           <p className="text-sm font-semibold text-slate-900">{title}</p>
@@ -394,7 +395,7 @@ export function ProjectContextPanel({
               </Badge>
             </div>
             <p className="mt-1 text-xs text-slate-500">
-              Project source of truth. Alex remains the conversational interface, but does not directly edit this published brief.
+              Canonical brief for Alex, planning, and team rebriefing.
             </p>
           </div>
         </div>
@@ -414,16 +415,40 @@ export function ProjectContextPanel({
                 </div>
               ) : null}
 
-              <div className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm leading-6 text-blue-900">
-                The published brief is the shared frame used by Alex, planning, learning, and knowledge audits.
-                Chat remains useful for exploring, clarifying, and arbitrating, but it does not replace this source of truth.
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <StatBlock
+                  label="Published"
+                  value={publishedHasContent ? `Rev ${published?.revision ?? 0}` : "No"}
+                  description={published?.published_at ? formatDate(published.published_at) : "No published reference yet"}
+                />
+                <StatBlock
+                  label="Completion"
+                  value={`${completionScore}/100`}
+                  description="Coverage of the current brief and supporting sources"
+                  tone={completionScore >= 75 ? "positive" : completionScore >= 40 ? "accent" : "warning"}
+                />
+                <StatBlock
+                  label="Documents"
+                  value={documentCount}
+                  description="Shared sources available to Alex and the agents"
+                />
+                <StatBlock
+                  label="Draft delta"
+                  value={publishedChangedLabels.length}
+                  description="Fields that differ from the published brief"
+                  tone={publishedChangedLabels.length > 0 ? "warning" : "default"}
+                />
+              </div>
+
+              <div className="rounded-[16px] border border-[var(--ops-border)] bg-[var(--ops-surface-strong)] px-4 py-3 text-sm leading-6 text-[var(--ops-ink)]">
+                Chat can clarify and arbitrate, but this brief remains the canonical reference for planning, learning, and rebriefing.
               </div>
 
               {!isEditing ? (
                 <div className="space-y-4">
-                  <div className="flex flex-col gap-3 rounded-2xl border border-black/5 bg-[#fafaf7] px-4 py-4 md:flex-row md:items-center md:justify-between">
+                  <div className="flex flex-col gap-3 rounded-[16px] border border-[var(--ops-border)] bg-[var(--ops-surface-muted)] px-4 py-4 md:flex-row md:items-center md:justify-between">
                     <div className="space-y-1">
-                      <p className="text-sm font-medium text-slate-900">Current brief</p>
+                      <p className="text-sm font-medium text-slate-900">Canonical read</p>
                       <p className="text-xs leading-5 text-slate-500">
                         Only one visible version at a time to keep the reading clear.
                       </p>
@@ -440,7 +465,7 @@ export function ProjectContextPanel({
                               : "border-black/8 bg-white text-slate-600 hover:border-black/12"
                           }`}
                         >
-                          Published view
+                          Published
                         </button>
                       ) : null}
                       {hasDraftContent ? (
@@ -466,7 +491,7 @@ export function ProjectContextPanel({
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-sm font-semibold text-slate-900">
-                        {selectedView === "published" ? "Published view" : "Current draft"}
+                        {selectedView === "published" ? "Published brief" : "Current draft"}
                       </p>
                       <p className="text-xs leading-5 text-slate-500">
                         {selectedView === "published"
@@ -491,10 +516,10 @@ export function ProjectContextPanel({
                     }
                   />
 
-                  <div className="space-y-3 rounded-2xl border border-black/5 bg-[#fafaf7] px-4 py-4">
+                  <div className="space-y-3 rounded-[16px] border border-[var(--ops-border)] bg-[var(--ops-surface-muted)] px-4 py-4">
                     <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                       <div className="space-y-1">
-                        <p className="text-sm font-medium text-slate-900">Draft / published diff</p>
+                        <p className="text-sm font-medium text-slate-900">Draft delta</p>
                         <p className="text-xs leading-5 text-slate-500">
                           Changes to publish stay secondary until you explicitly ask for the detail.
                         </p>
@@ -524,7 +549,7 @@ export function ProjectContextPanel({
                           ))}
                         </div>
                       ) : (
-                        <div className="rounded-2xl border border-dashed border-black/8 bg-muted/30 px-4 py-4 text-sm text-muted-foreground">
+                        <div className="rounded-[16px] border border-dashed border-[var(--ops-border-strong)] bg-[var(--ops-surface-elevated)] px-4 py-4 text-sm text-muted-foreground">
                           No difference between the current draft and the published brief.
                         </div>
                       )
@@ -533,11 +558,11 @@ export function ProjectContextPanel({
                 </div>
               ) : (
                 <div className="space-y-5">
-                  <div className="flex flex-col gap-3 rounded-2xl border border-black/5 bg-[#fafaf7] px-4 py-4 md:flex-row md:items-center md:justify-between">
+                  <div className="flex flex-col gap-3 rounded-[16px] border border-[var(--ops-border)] bg-[var(--ops-surface-muted)] px-4 py-4 md:flex-row md:items-center md:justify-between">
                     <div className="space-y-1">
-                      <p className="text-sm font-medium text-slate-900">Draft editing</p>
+                      <p className="text-sm font-medium text-slate-900">Edit draft</p>
                       <p className="text-xs leading-5 text-slate-500">
-                        Update the project frame without stacking all reading views together.
+                        Update the canonical project frame without losing the published baseline.
                       </p>
                     </div>
 

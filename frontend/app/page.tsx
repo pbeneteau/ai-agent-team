@@ -7,9 +7,7 @@ import {
   AlertTriangle,
   ArrowRight,
   Bot,
-  BrainCircuit,
   CheckCircle2,
-  ClipboardList,
   Loader2,
   Radar,
   RefreshCw,
@@ -18,12 +16,15 @@ import {
   Workflow,
 } from "lucide-react";
 
+import { buildAlexWorkspaceHref } from "@/components/chat/chat-shell";
 import { AgentCard } from "@/components/agents/AgentCard";
+import { EmptyState } from "@/components/layout/EmptyState";
+import { SectionPanel } from "@/components/layout/SectionPanel";
+import { StatBlock } from "@/components/layout/StatBlock";
 import { WorkspacePageShell } from "@/components/layout/WorkspacePageShell";
 import { TaskCard } from "@/components/tasks/TaskCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { formatRelativeTimestamp } from "@/lib/config/formatting";
 import {
   DASHBOARD_RECENT_TASKS_LIMIT,
@@ -84,20 +85,13 @@ function StatLinkCard({
 }) {
   return (
     <Link href={href}>
-      <Card className="h-full border-black/5 bg-white/92 shadow-[0_18px_46px_-34px_rgba(15,23,42,0.16)] ring-0 transition-transform hover:-translate-y-0.5 hover:border-black/8">
-        <CardContent className="flex h-full items-start justify-between gap-4 p-4">
-          <div className="space-y-2">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-              {label}
-            </p>
-            <p className="text-2xl font-semibold tracking-tight text-slate-950">{value}</p>
-            <p className="text-xs leading-5 text-slate-500">{description}</p>
-          </div>
-          <div className="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-slate-50 text-slate-700">
-            {icon}
-          </div>
-        </CardContent>
-      </Card>
+      <StatBlock
+        label={label}
+        value={value}
+        description={description}
+        icon={icon}
+        className="h-full transition-transform hover:-translate-y-0.5 hover:border-[var(--ops-border-strong)]"
+      />
     </Link>
   );
 }
@@ -223,8 +217,8 @@ export default function DashboardPage() {
       items.push({
         title: "Compose the first team",
         description: "No operational agent exists yet. Start by scoping the structure with Alex.",
-        href: "/team-builder",
-        cta: "Open Alex team design",
+        href: buildAlexWorkspaceHref({ mode: "design-team" }),
+        cta: "Open Design Team",
         tone: "indigo",
       });
     }
@@ -232,8 +226,8 @@ export default function DashboardPage() {
       items.push({
         title: "Publish the reference brief",
         description: "The published brief should become the source of truth before accelerating tasks and learning.",
-        href: "/project-context",
-        cta: "Open Brief & Documents",
+        href: "/project-context?section=brief",
+        cta: "Open Context",
         tone: "amber",
       });
     }
@@ -259,7 +253,7 @@ export default function DashboardPage() {
             ? `${agentsMissingContext.length} agents need context`
             : `${agent.agent_name} lacks context`,
         description: agent.summary,
-        href: "/project-context",
+        href: "/project-context?section=readiness",
         cta: "Address the context",
         tone: "amber",
       });
@@ -270,8 +264,8 @@ export default function DashboardPage() {
         description:
           latestStructuredSignal.stats.last_failure?.message ??
           `${latestStructuredSignal.stats.failures} structured failure(s) observed on this flow.`,
-        href: "/usage",
-        cta: "Inspect AI Observability",
+        href: "/usage?section=reliability",
+        cta: "Open Reliability",
         tone: "slate",
       });
     }
@@ -293,8 +287,10 @@ export default function DashboardPage() {
 
   return (
     <WorkspacePageShell
-      title="Operations"
-      description="See what needs action now, what is blocked, and what decision comes next."
+      archetype="command-center"
+      headerMode="compact"
+      title="Command Center"
+      description="Run the product from one clear operational view."
       meta={
         <>
           <span>Last updated {formatRelativeTimestamp(lastUpdatedAt)}</span>
@@ -335,26 +331,17 @@ export default function DashboardPage() {
       ) : (
         <>
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]">
-            <Card className="border-black/5 bg-white/92 shadow-[0_22px_48px_-34px_rgba(15,23,42,0.2)] ring-0">
-              <CardHeader className="border-b border-black/5 pb-4">
-                <div className="flex items-center gap-3">
-                  <div className="flex size-11 items-center justify-center rounded-2xl bg-amber-50 text-amber-700">
-                    <TriangleAlert className="size-5" />
-                  </div>
-                  <div>
-                    <p className="text-base font-semibold text-slate-950">Needs attention now</p>
-                    <p className="mt-1 text-sm text-slate-500">
-                      The items that change product trajectory or unblock execution.
-                    </p>
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-3 pt-5">
+            <SectionPanel
+              eyebrow="Priority queue"
+              title="Needs attention now"
+              description="The items that change trajectory or unblock execution."
+            >
+              <div className="space-y-3">
                 {attentionItems.map((item) => (
                   <Link
                     key={`${item.title}-${item.href}`}
                     href={item.href}
-                    className={`block rounded-2xl border px-4 py-4 transition-transform hover:-translate-y-0.5 ${toneClasses(item.tone)}`}
+                    className={`block rounded-[22px] border px-4 py-4 transition-transform hover:-translate-y-0.5 ${toneClasses(item.tone)}`}
                   >
                     <div className="flex items-start justify-between gap-4">
                       <div className="space-y-2">
@@ -366,24 +353,15 @@ export default function DashboardPage() {
                     <p className="mt-3 text-xs font-medium opacity-80">{item.cta}</p>
                   </Link>
                 ))}
-              </CardContent>
-            </Card>
+              </div>
+            </SectionPanel>
 
-            <Card className="border-black/5 bg-white/92 shadow-[0_22px_48px_-34px_rgba(15,23,42,0.2)] ring-0">
-              <CardHeader className="border-b border-black/5 pb-4">
-                <div className="flex items-center gap-3">
-                  <div className="flex size-11 items-center justify-center rounded-2xl bg-primary/8 text-primary">
-                    <ClipboardList className="size-5" />
-                  </div>
-                  <div>
-                    <p className="text-base font-semibold text-slate-950">Recommended next action</p>
-                    <p className="mt-1 text-sm text-slate-500">
-                      The best immediate lever based on the state of the brief, tasks, and agents.
-                    </p>
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-4 pt-5">
+            <SectionPanel
+              eyebrow="Operator move"
+              title="Recommended next action"
+              description="The best immediate lever based on the current system state."
+            >
+              <div className="space-y-4">
                 <div className={`rounded-3xl border px-5 py-5 ${toneClasses(recommendedAction.tone)}`}>
                   <p className="text-sm font-semibold">{recommendedAction.title}</p>
                   <p className="mt-3 text-sm leading-6 opacity-90">{recommendedAction.description}</p>
@@ -403,7 +381,7 @@ export default function DashboardPage() {
                   </div>
                 </div>
 
-                <div className="rounded-2xl border border-black/5 bg-slate-50/70 px-4 py-4">
+                <div className="rounded-[22px] border border-[var(--ops-border)] bg-[color:rgba(255,255,251,0.68)] px-4 py-4">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
                     What the system says
                   </p>
@@ -422,41 +400,41 @@ export default function DashboardPage() {
                     </Badge>
                   </div>
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+            </SectionPanel>
           </div>
 
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
             <StatLinkCard
-              href="/team"
+              href="/team?section=teams"
               label="Teams"
               value={`${teams.length}`}
               description="Structure active"
               icon={<Users className="size-5 text-indigo-600" />}
             />
             <StatLinkCard
-              href="/team"
+              href="/team?section=agents"
               label="Ready agents"
               value={`${readyAgents.length}`}
               description="Available to start"
               icon={<Bot className="size-5 text-violet-600" />}
             />
             <StatLinkCard
-              href="/team"
+              href="/team?section=agents"
               label="Busy agents"
               value={`${busyAgents.length}`}
               description="Already engaged"
               icon={<Workflow className="size-5 text-sky-600" />}
             />
             <StatLinkCard
-              href="/tasks"
+              href="/tasks?view=running"
               label="Running tasks"
               value={`${runningTasks.length}`}
               description="Worth watching"
               icon={<Loader2 className="size-5 text-blue-600" />}
             />
             <StatLinkCard
-              href="/tasks"
+              href="/tasks?view=blocked"
               label="Needs decision"
               value={`${blockedOrFailedTasks.length}`}
               description="Blocked or failed"
@@ -465,16 +443,14 @@ export default function DashboardPage() {
           </div>
 
           <div className="grid gap-4 xl:grid-cols-3">
-            <Card className="border-black/5 bg-white/92 shadow-[0_18px_46px_-34px_rgba(15,23,42,0.16)] ring-0">
-              <CardHeader className="border-b border-black/5 pb-3">
-                <p className="text-base font-semibold text-slate-950">Blocked or failed tasks</p>
-                <p className="text-sm text-slate-500">Tasks waiting for a decision, clarification, or retry.</p>
-              </CardHeader>
-              <CardContent className="space-y-3 pt-5">
+            <SectionPanel
+              title="Blocked or failed tasks"
+              description="Tasks waiting for a decision, clarification, or retry."
+              tone="subtle"
+            >
+              <div className="space-y-3">
                 {blockedOrFailedTasks.length === 0 ? (
-                  <div className="rounded-2xl border border-dashed border-black/8 bg-slate-50/60 px-4 py-5 text-sm text-slate-500">
-                    No critical task needs unblocking right now.
-                  </div>
+                  <EmptyState description="No critical task needs unblocking right now." />
                 ) : (
                   blockedOrFailedTasks.slice(0, 3).map((task) => (
                     <Link
@@ -497,24 +473,22 @@ export default function DashboardPage() {
                     </Link>
                   ))
                 )}
-              </CardContent>
-            </Card>
+              </div>
+            </SectionPanel>
 
-            <Card className="border-black/5 bg-white/92 shadow-[0_18px_46px_-34px_rgba(15,23,42,0.16)] ring-0">
-              <CardHeader className="border-b border-black/5 pb-3">
-                <p className="text-base font-semibold text-slate-950">Agents missing context</p>
-                <p className="text-sm text-slate-500">Agents that would immediately become more reliable with more context.</p>
-              </CardHeader>
-              <CardContent className="space-y-3 pt-5">
+            <SectionPanel
+              title="Agents missing context"
+              description="Agents that would immediately become more reliable with more context."
+              tone="subtle"
+            >
+              <div className="space-y-3">
                 {agentsMissingContext.length === 0 ? (
-                  <div className="rounded-2xl border border-dashed border-black/8 bg-slate-50/60 px-4 py-5 text-sm text-slate-500">
-                    No critical agent context gap detected.
-                  </div>
+                  <EmptyState description="No critical agent context gap detected." />
                 ) : (
                   agentsMissingContext.slice(0, 3).map((agent) => (
                     <Link
                       key={agent.agent_id}
-                      href="/project-context"
+                      href="/project-context?section=readiness"
                       className="block rounded-2xl border border-black/5 bg-slate-50/80 px-4 py-4 transition-colors hover:border-primary/20 hover:bg-primary/5"
                     >
                       <div className="flex items-start justify-between gap-3">
@@ -537,18 +511,18 @@ export default function DashboardPage() {
                     </Link>
                   ))
                 )}
-              </CardContent>
-            </Card>
+              </div>
+            </SectionPanel>
 
-            <Card className="border-black/5 bg-white/92 shadow-[0_18px_46px_-34px_rgba(15,23,42,0.16)] ring-0">
-              <CardHeader className="border-b border-black/5 pb-3">
-                <p className="text-base font-semibold text-slate-950">Latest observability signal</p>
-                <p className="text-sm text-slate-500">The latest useful signal surfaced by structured outputs and runtime diagnostics.</p>
-              </CardHeader>
-              <CardContent className="space-y-3 pt-5">
+            <SectionPanel
+              title="Latest observability signal"
+              description="The latest useful signal surfaced by structured outputs and runtime diagnostics."
+              tone="subtle"
+            >
+              <div className="space-y-3">
                 {latestStructuredSignal ? (
                   <Link
-                    href="/usage"
+                    href="/usage?section=reliability"
                     className="block rounded-2xl border border-black/5 bg-slate-50/80 px-4 py-4 transition-colors hover:border-primary/20 hover:bg-primary/5"
                   >
                     <div className="flex items-start justify-between gap-3">
@@ -577,84 +551,82 @@ export default function DashboardPage() {
                     </div>
                     <p className="mt-3 text-sm leading-6 text-slate-600">
                       {latestStructuredSignal.stats.last_failure?.message ??
-                        "No recent failure on this flow. Open AI Observability for technical detail."}
+                        "No recent failure on this flow. Open Reliability for technical detail."}
                     </p>
                   </Link>
                 ) : (
-                  <div className="rounded-2xl border border-dashed border-black/8 bg-slate-50/60 px-4 py-5 text-sm text-slate-500">
-                    No structured signal available right now.
-                  </div>
+                  <EmptyState description="No structured signal available right now." />
                 )}
-              </CardContent>
-            </Card>
+              </div>
+            </SectionPanel>
           </div>
 
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
             <div>
-              <div className="mb-4 flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="font-semibold text-slate-900">Recent executions</h2>
-                  <p className="mt-1 text-sm text-slate-500">The latest executed tasks, to keep a quick read on the workflow.</p>
-                </div>
-                <Link href="/tasks" className="text-xs text-indigo-600 hover:underline flex items-center gap-1">
-                  View all <ArrowRight className="w-3 h-3" />
-                </Link>
-              </div>
-              {recentTasks.length === 0 ? (
-                <Card className="border-black/5 bg-white/92 shadow-[0_18px_46px_-34px_rgba(15,23,42,0.12)] ring-0">
-                  <CardContent className="p-8 text-center text-slate-500 text-sm">
-                    No recent execution. Use Alex to scope the next task.
-                  </CardContent>
-                </Card>
-              ) : (
-                <div className="space-y-3">
-                  {recentTasks.map((task) => (
-                    <TaskCard key={task.id} task={task} />
-                  ))}
-                </div>
-              )}
+              <SectionPanel
+                title="Recent executions"
+                description="The latest executed tasks, to keep a quick read on the workflow."
+                actions={
+                  <Link href="/tasks?view=all" className="text-xs text-indigo-600 hover:underline flex items-center gap-1">
+                    View all <ArrowRight className="w-3 h-3" />
+                  </Link>
+                }
+              >
+                {recentTasks.length === 0 ? (
+                  <EmptyState description="No recent execution. Use Alex to scope the next task." />
+                ) : (
+                  <div className="space-y-3">
+                    {recentTasks.map((task) => (
+                      <TaskCard key={task.id} task={task} />
+                    ))}
+                  </div>
+                )}
+              </SectionPanel>
             </div>
 
             <div>
-              <div className="mb-4 flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="font-semibold text-slate-900">Ready to work</h2>
-                  <p className="mt-1 text-sm text-slate-500">Agents immediately available for the next execution.</p>
-                </div>
-                <Link href="/team" className="text-xs text-indigo-600 hover:underline flex items-center gap-1">
-                  View all <ArrowRight className="w-3 h-3" />
-                </Link>
-              </div>
-              {visibleAgents.length === 0 ? (
-                <Card className="border-black/5 bg-white/92 shadow-[0_18px_46px_-34px_rgba(15,23,42,0.12)] ring-0">
-                  <CardContent className="space-y-3 p-8 text-center text-sm text-slate-500">
-                    <div className="mx-auto flex size-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-600">
-                      <BrainCircuit className="size-5" />
-                    </div>
-                    <p>No agent is immediately available. Check capacity or enrich the context before the next launch.</p>
-                    <div className="flex justify-center gap-2">
-                      <Link href="/team">
-                        <Button variant="outline" className="rounded-full gap-2">
-                          <Users className="size-4" />
-                          View Teams & Agents
-                        </Button>
-                      </Link>
-                      <Link href="/project-context">
-                        <Button variant="outline" className="rounded-full gap-2">
-                          <CheckCircle2 className="size-4" />
-                          Address the context
-                        </Button>
-                      </Link>
-                    </div>
-                  </CardContent>
-                </Card>
-              ) : (
-                <div className="grid gap-3 md:grid-cols-2">
-                  {visibleAgents.map((agent) => (
-                    <AgentCard key={agent.id} agent={agent} onOpen={(selectedAgent) => router.push(`/team/agents/${selectedAgent.id}`)} />
-                  ))}
-                </div>
-              )}
+              <SectionPanel
+                title="Ready to work"
+                description="Agents immediately available for the next execution."
+                actions={
+                  <Link href="/team?section=agents" className="text-xs text-indigo-600 hover:underline flex items-center gap-1">
+                    View all <ArrowRight className="w-3 h-3" />
+                  </Link>
+                }
+              >
+                {visibleAgents.length === 0 ? (
+                  <EmptyState
+                    title="No agent is immediately available."
+                    description="Check capacity or enrich the context before the next launch."
+                    action={
+                      <div className="flex flex-wrap gap-2">
+                        <Link href="/team?section=teams">
+                          <Button variant="outline" className="rounded-full gap-2">
+                            <Users className="size-4" />
+                            Open Organization
+                          </Button>
+                        </Link>
+                        <Link href="/project-context?section=readiness">
+                          <Button variant="outline" className="rounded-full gap-2">
+                            <CheckCircle2 className="size-4" />
+                            Address the context
+                          </Button>
+                        </Link>
+                      </div>
+                    }
+                  />
+                ) : (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {visibleAgents.map((agent) => (
+                      <AgentCard
+                        key={agent.id}
+                        agent={agent}
+                        onOpen={(selectedAgent) => router.push(`/team/agents/${selectedAgent.id}`)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </SectionPanel>
             </div>
           </div>
         </>

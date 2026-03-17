@@ -8,14 +8,16 @@ import {
   ExternalLink,
   FileText,
   GitBranch,
-  ListTodo,
   Loader2,
   RotateCcw,
   ShieldAlert,
-  Target,
   Workflow,
 } from "lucide-react";
 
+import { EmptyState } from "@/components/layout/EmptyState";
+import { SectionPanel } from "@/components/layout/SectionPanel";
+import { SegmentedTabs } from "@/components/layout/SegmentedTabs";
+import { StatBlock } from "@/components/layout/StatBlock";
 import { MarkdownContent } from "@/components/ui/markdown-content";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -136,6 +138,7 @@ export function TaskDetailView({ task, onTaskUpdated }: TaskDetailViewProps) {
   const currentTask = taskDetail;
   const status = STATUS_CONFIG[currentTask.status];
   const priority = PRIORITY_CONFIG[currentTask.priority];
+  const observabilityHref = "/usage?section=reliability";
   const planNodes = currentTask.execution_plan.nodes;
   const availableDeliverables = deliverables.length > 0 ? deliverables : currentTask.deliverables;
   const planNodeById = useMemo(
@@ -144,6 +147,9 @@ export function TaskDetailView({ task, onTaskUpdated }: TaskDetailViewProps) {
   );
   const completedNodes = planNodes.filter((node) => node.status === "completed").length;
   const hasWarnings = currentTask.warnings.length > 0 || currentTask.assumptions.length > 0;
+  const reviewItems = currentTask.warnings.length + currentTask.assumptions.length;
+  const latestProgressEntry =
+    currentTask.progress_log.length > 0 ? currentTask.progress_log[currentTask.progress_log.length - 1] : null;
   const agentNameById = useMemo(
     () => Object.fromEntries(agents.map((agent) => [agent.id, agent.name])),
     [agents],
@@ -242,141 +248,129 @@ export function TaskDetailView({ task, onTaskUpdated }: TaskDetailViewProps) {
   return (
     <div className="space-y-5">
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <Card className="border-black/5 bg-white/92 shadow-none">
-          <CardContent className="p-4">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Status</p>
-            <div className="mt-3 flex items-center gap-2">
-              <Badge variant="outline" className={`text-xs gap-1 ${status.className}`}>
-                <status.Icon className={`w-3.5 h-3.5${currentTask.status === "running" ? " animate-spin" : ""}`} />
-                {status.label}
-              </Badge>
-              <Badge variant="outline" className={`text-xs ${priority.className}`}>
-                {priority.label}
-              </Badge>
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="border-black/5 bg-white/92 shadow-none">
-          <CardContent className="p-4">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Mode</p>
-            <p className="mt-3 text-lg font-semibold text-slate-900">
-              {EXECUTION_MODE_LABELS[currentTask.execution_mode]}
-            </p>
-          </CardContent>
-        </Card>
-        <Card className="border-black/5 bg-white/92 shadow-none">
-          <CardContent className="p-4">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Plan</p>
-            <p className="mt-3 text-lg font-semibold text-slate-900">
-              {PLAN_STATUS_LABELS[currentTask.execution_plan.status]}
-            </p>
-          </CardContent>
-        </Card>
-        <Card className="border-black/5 bg-white/92 shadow-none">
-          <CardContent className="p-4">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Progress</p>
-            <p className="mt-3 text-lg font-semibold text-slate-900">
-              {completedNodes}/{planNodes.length || 0} node{planNodes.length > 1 ? "s" : ""}
-            </p>
-          </CardContent>
-        </Card>
+        <StatBlock
+          label="Status"
+          value={status.label}
+          description={priority.label}
+          tone={currentTask.status === "failed" ? "danger" : currentTask.status === "running" ? "accent" : "default"}
+          icon={<status.Icon className={`size-4${currentTask.status === "running" ? " animate-spin" : ""}`} />}
+        />
+        <StatBlock
+          label="Progress"
+          value={`${completedNodes}/${planNodes.length || 0}`}
+          description={`Completed node${planNodes.length === 1 ? "" : "s"}`}
+        />
+        <StatBlock
+          label="Deliverables"
+          value={availableDeliverables.length}
+          description={availableDeliverables.length > 0 ? "Files available" : "No file yet"}
+          tone={availableDeliverables.length > 0 ? "positive" : "default"}
+        />
+        <StatBlock
+          label="Review"
+          value={reviewItems}
+          description={currentTask.execution_eligibility !== "eligible" ? "Blocking clarification" : "Warnings and assumptions"}
+          tone={currentTask.execution_eligibility !== "eligible" ? "warning" : reviewItems > 0 ? "warning" : "default"}
+        />
       </div>
 
-      {currentTask.execution_eligibility !== "eligible" ? (
-        <div className="rounded-3xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-900">
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-700" />
-            <div>
-              <p className="font-semibold">Execution not ready</p>
-              <ul className="mt-2 space-y-1.5">
-                {currentTask.execution_blockers.map((blocker) => (
-                  <li key={blocker}>- {blocker}</li>
-                ))}
-              </ul>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {loadingDetail ? (
-        <div className="flex items-center gap-2 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Loading the latest task detail…
-        </div>
-      ) : null}
-
-      <div className="flex flex-wrap gap-2 border-b border-black/6 pb-3">
-        {[
-          { id: "summary", label: "Summary" },
-          { id: "deliverables", label: "Deliverables" },
-          { id: "execution", label: "Execution" },
-          { id: "sources", label: "Sources & Risks" },
-        ].map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => setActiveTab(tab.id as TaskDetailTab)}
-            className={`rounded-full border px-3 py-1.5 text-sm font-medium transition-colors ${
-              activeTab === tab.id
-                ? "border-primary bg-primary/8 text-primary"
-                : "border-black/8 bg-white text-slate-600 hover:border-black/12 hover:text-slate-900"
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
-      {activeTab === "summary" ? (
-        <div className="space-y-5">
-          <Card className="border-black/5 bg-white/92 shadow-none">
-            <CardContent className="grid gap-4 p-5 md:grid-cols-2 xl:grid-cols-4">
-              <SummaryRow label="Created" value={formatDateTime(currentTask.created_at)} />
-              <SummaryRow label="Updated" value={formatDateTime(currentTask.updated_at)} />
-              <SummaryRow label="Brief revision" value={currentTask.brief_revision ? `Rev ${currentTask.brief_revision}` : "None"} />
-              <SummaryRow label="Assigned agents" value={`${currentTask.assigned_agent_ids.length}`} />
-            </CardContent>
-          </Card>
-
-          {currentTask.result ? (
-            <section className="rounded-3xl border border-emerald-100 bg-emerald-50/70 p-5 shadow-sm">
-              <div className="mb-4 flex items-center gap-2">
-                <div className="rounded-full bg-emerald-100 p-2 text-emerald-700">
-                  <Target className="h-4 w-4" />
-                </div>
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.14em] text-emerald-700">
-                    Final result
-                  </p>
-                  <p className="text-sm text-emerald-900/80">
-                    The summary to read first before drilling into execution details.
-                  </p>
+      <SectionPanel
+        eyebrow="Operator readout"
+        title="Summary first read"
+        description="Read this block before drilling into the full execution trace."
+        tone="muted"
+        actions={
+          <>
+            <Badge variant="outline">{EXECUTION_MODE_LABELS[currentTask.execution_mode]}</Badge>
+            <Badge variant="outline">{PLAN_STATUS_LABELS[currentTask.execution_plan.status]}</Badge>
+          </>
+        }
+      >
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
+          <div className="space-y-4">
+            {currentTask.execution_eligibility !== "eligible" ? (
+              <div className="ops-signal-warning rounded-[16px] border px-4 py-4 text-sm">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                  <div>
+                    <p className="font-semibold">Execution not ready</p>
+                    <ul className="mt-2 space-y-1.5">
+                      {currentTask.execution_blockers.map((blocker) => (
+                        <li key={blocker}>- {blocker}</li>
+                      ))}
+                    </ul>
+                  </div>
                 </div>
               </div>
-              <div className="rounded-2xl border border-emerald-100 bg-white/85 p-5">
+            ) : null}
+
+            {currentTask.status === "failed" && currentTask.error ? (
+              <div className="ops-signal-danger rounded-[16px] border px-4 py-4 text-sm">
+                <p className="text-xs font-semibold uppercase tracking-[0.14em]">Failure</p>
+                <FailureMetaChips errorType={currentTask.error_type} failureStage={currentTask.failure_stage} />
+                <div className="mt-3 whitespace-pre-wrap rounded-[14px] border border-[var(--ops-signal-danger-border)] bg-white/75 p-4 font-mono text-xs text-[var(--ops-signal-danger-ink)]">
+                  {currentTask.error}
+                </div>
+                <FailureTraceback traceback={currentTask.error_traceback} />
+                <div className="mt-4">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-2"
+                    onClick={handleRetry}
+                    disabled={retrying}
+                  >
+                    {retrying ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <RotateCcw className="w-3.5 h-3.5" />
+                    )}
+                    Retry execution
+                  </Button>
+                </div>
+              </div>
+            ) : currentTask.status === "running" && latestProgressEntry ? (
+              <div className="ops-signal-info rounded-[16px] border px-4 py-4 text-sm">
+                <p className="text-xs font-semibold uppercase tracking-[0.14em]">Live signal</p>
+                {(latestProgressEntry.agent_name ?? latestProgressEntry.agent) ? (
+                  <p className="mt-2 text-xs font-medium">
+                    {latestProgressEntry.agent_name ?? latestProgressEntry.agent}
+                  </p>
+                ) : null}
+                <p className="mt-1 leading-6">{latestProgressEntry.message}</p>
+              </div>
+            ) : currentTask.result ? (
+              <div className="rounded-[16px] border border-[var(--ops-border)] bg-[var(--ops-surface-elevated)] p-5">
+                <p className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-[var(--ops-signal-positive-ink)]">Final result</p>
                 <MarkdownContent content={currentTask.result} className="prose-sm" />
               </div>
-            </section>
-          ) : (
-            <Card className="border-black/5 bg-white/92 shadow-none">
-              <CardContent className="p-5 text-sm text-slate-500">
-                No consolidated final result yet.
-              </CardContent>
-            </Card>
-          )}
+            ) : (
+              <EmptyState description="No consolidated operator summary is available yet." />
+            )}
+          </div>
 
-          {currentTask.assigned_agent_ids.length > 0 ? (
-            <Card className="border-black/5 bg-white/92 shadow-none">
-              <CardContent className="p-5">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                  Assigned agents
-                </p>
-                <div className="mt-4 flex flex-wrap gap-2">
+          <div className="space-y-4">
+            <div className="rounded-[16px] border border-[var(--ops-border)] bg-[var(--ops-surface-elevated)] p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Task facts</p>
+              <div className="mt-4 grid gap-4">
+                <SummaryRow label="Created" value={formatDateTime(currentTask.created_at)} />
+                <SummaryRow label="Updated" value={formatDateTime(currentTask.updated_at)} />
+                <SummaryRow label="Mode" value={EXECUTION_MODE_LABELS[currentTask.execution_mode]} />
+                <SummaryRow label="Brief revision" value={currentTask.brief_revision ? `Rev ${currentTask.brief_revision}` : "None"} />
+                <SummaryRow label="Assigned agents" value={`${currentTask.assigned_agent_ids.length}`} />
+                <SummaryRow label="Sources" value={`${currentTask.sources.length}`} />
+              </div>
+            </div>
+
+            {currentTask.assigned_agent_ids.length > 0 ? (
+              <div className="rounded-[16px] border border-[var(--ops-border)] bg-[var(--ops-surface-elevated)] p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Assigned agents</p>
+                <div className="mt-3 flex flex-wrap gap-2">
                   {busyAgentIds.map((id) => (
                     <Badge
                       key={`busy-${id}`}
-                      variant="secondary"
-                      className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs text-blue-700"
+                      variant="info"
+                      className="px-3 py-1 text-xs"
                     >
                       {getAgentLabel(id)} · Busy
                     </Badge>
@@ -385,50 +379,122 @@ export function TaskDetailView({ task, onTaskUpdated }: TaskDetailViewProps) {
                     <Badge
                       key={`assigned-${id}`}
                       variant="secondary"
-                      className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-xs text-violet-700"
+                      className="px-3 py-1 text-xs"
                     >
                       {getAgentLabel(id)} · Assigned
                     </Badge>
                   ))}
                 </div>
-              </CardContent>
-            </Card>
-          ) : null}
+              </div>
+            ) : null}
+
+            <Link href={observabilityHref}>
+              <Button variant="outline" className="w-full gap-2">
+                <Workflow className="size-4" />
+                Open Reliability
+              </Button>
+            </Link>
+          </div>
+        </div>
+      </SectionPanel>
+
+      {loadingDetail ? (
+        <div className="ops-signal-info flex items-center gap-2 rounded-[16px] border px-4 py-3 text-sm">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading the latest task detail…
+        </div>
+      ) : null}
+
+      <SegmentedTabs
+        items={[
+          { id: "summary", label: "Readout" },
+          { id: "deliverables", label: "Deliverables" },
+          { id: "execution", label: "Execution trace" },
+          { id: "sources", label: "Sources & risks" },
+        ]}
+        value={activeTab}
+        onValueChange={setActiveTab}
+      />
+
+      {activeTab === "summary" ? (
+        <div className="space-y-5">
+          <SectionPanel
+            eyebrow="Task brief"
+            title="Execution scope"
+            description="Canonical task description and planning context captured for this execution."
+            tone="subtle"
+          >
+            <div className="space-y-4">
+              <p className="text-sm leading-6 text-slate-700">{currentTask.description}</p>
+              {currentTask.execution_plan.planning_notes ? (
+                <div className="rounded-[16px] border border-[var(--ops-border)] bg-[var(--ops-surface-elevated)] px-4 py-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Planning notes</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-700">{currentTask.execution_plan.planning_notes}</p>
+                </div>
+              ) : null}
+            </div>
+          </SectionPanel>
+
+          <SectionPanel
+            eyebrow="Signals"
+            title="Operator notes"
+            description="Warnings, assumptions, and review signals that should stay visible before sign-off."
+            tone="subtle"
+          >
+            {hasWarnings ? (
+              <div className="grid gap-4 xl:grid-cols-2">
+                {currentTask.warnings.length > 0 ? (
+                  <div className="ops-signal-warning rounded-[16px] border px-4 py-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-800">Unverified</p>
+                    <ul className="mt-3 space-y-1.5 list-disc pl-4 text-sm text-amber-900">
+                      {currentTask.warnings.map((warning) => (
+                        <li key={warning}>{warning}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                {currentTask.assumptions.length > 0 ? (
+                  <div className="ops-signal-warning rounded-[16px] border px-4 py-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-800">Assumptions / TBD</p>
+                    <ul className="mt-3 space-y-1.5 list-disc pl-4 text-sm text-amber-900">
+                      {currentTask.assumptions.map((assumption) => (
+                        <li key={assumption}>{assumption}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <EmptyState description="No warning or assumption requires operator review right now." />
+            )}
+          </SectionPanel>
         </div>
       ) : null}
 
       {activeTab === "deliverables" ? (
-        <section className="rounded-3xl border border-slate-200 bg-white/92 p-5 shadow-none">
-          <div className="mb-4 flex items-center justify-between gap-3 flex-wrap">
-            <div>
-              <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
-                <FileText className="h-3.5 w-3.5" />
-                Deliverables
-              </p>
-              <p className="mt-2 text-sm text-slate-600">
-                Browse the files generated for this task.
-              </p>
-            </div>
-            {currentTask.deliverables_dir ? (
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-medium text-slate-600">
+        <SectionPanel
+          eyebrow="Artifacts"
+          title="Deliverables"
+          description="Browse the files generated for this task."
+          actions={
+            currentTask.deliverables_dir ? (
+              <span className="rounded-full bg-[var(--ops-surface-muted)] px-3 py-1 text-[11px] font-medium text-slate-600">
                 {currentTask.deliverables_dir}
               </span>
-            ) : null}
-          </div>
-
+            ) : null
+          }
+        >
           {loadingDeliverables ? (
-            <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+            <div className="flex items-center gap-2 rounded-[16px] border border-[var(--ops-border)] bg-[var(--ops-surface-muted)] px-4 py-3 text-sm text-slate-600">
               <Loader2 className="h-4 w-4 animate-spin" />
               Loading deliverables…
             </div>
           ) : (
             <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
-              <div className="rounded-2xl border bg-slate-50 p-3">
+              <div className="rounded-[16px] border border-[var(--ops-border)] bg-[var(--ops-surface-muted)] p-3">
                 <div className="space-y-2">
                   {availableDeliverables.length === 0 ? (
-                    <div className="rounded-2xl border border-dashed bg-white px-4 py-6 text-sm text-slate-400">
-                      No deliverables generated yet.
-                    </div>
+                    <EmptyState description="No deliverables generated yet." className="px-4 py-6" />
                   ) : (
                     availableDeliverables.map((deliverable) => {
                       const isActive = deliverable.path === selectedDeliverablePath;
@@ -503,33 +569,21 @@ export function TaskDetailView({ task, onTaskUpdated }: TaskDetailViewProps) {
                     </div>
                   </>
                 ) : (
-                  <div className="flex h-full min-h-40 items-center justify-center rounded-2xl border border-dashed bg-white text-sm text-slate-400">
-                    No deliverable available.
-                  </div>
+                  <EmptyState description="No deliverable available." className="flex min-h-40 items-center justify-center" />
                 )}
               </div>
             </div>
           )}
-        </section>
+        </SectionPanel>
       ) : null}
 
       {activeTab === "execution" ? (
         <div className="space-y-5">
-          <section className="space-y-4">
-            <div className="flex items-center justify-between gap-3 flex-wrap">
-              <div>
-                <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
-                  <Workflow className="h-3.5 w-3.5" />
-                  Execution plan
-                </p>
-                {currentTask.execution_plan.planning_notes ? (
-                  <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                    {currentTask.execution_plan.planning_notes}
-                  </p>
-                ) : null}
-              </div>
-            </div>
-
+          <SectionPanel
+            eyebrow="Plan"
+            title="Execution plan"
+            description="Structured nodes, dependencies, and per-node output for this execution."
+          >
             {planNodes.length === 0 ? (
               <Card className="border-black/5 bg-white/92 shadow-none">
                 <CardContent className="p-5 text-sm text-slate-500">
@@ -619,13 +673,14 @@ export function TaskDetailView({ task, onTaskUpdated }: TaskDetailViewProps) {
                 })}
               </div>
             )}
-          </section>
+          </SectionPanel>
 
-          <section className="space-y-3">
-            <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
-              <ListTodo className="h-3.5 w-3.5" />
-              Timeline
-            </p>
+          <SectionPanel
+            eyebrow="Progress"
+            title="Timeline"
+            description="Chronological execution log with the latest agent messages and structured flow markers."
+            tone="subtle"
+          >
             {currentTask.progress_log.length === 0 ? (
               <Card className="border-black/5 bg-white/92 shadow-none">
                 <CardContent className="p-5 text-sm text-slate-500">
@@ -667,62 +722,70 @@ export function TaskDetailView({ task, onTaskUpdated }: TaskDetailViewProps) {
                 </div>
               </div>
             )}
-          </section>
+          </SectionPanel>
         </div>
       ) : null}
 
       {activeTab === "sources" ? (
         <div className="space-y-5">
-          {currentTask.sources.length > 0 ? (
-            <section className="rounded-3xl border border-blue-100 bg-blue-50/70 p-5 shadow-none">
-              <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-blue-700">
-                <ExternalLink className="h-3.5 w-3.5" />
-                Cited sources
-              </p>
-              <ul className="mt-4 space-y-2">
-                {currentTask.sources.map((source) => (
-                  <SourceItem key={source} source={source} />
-                ))}
-              </ul>
-            </section>
-          ) : null}
-
-          {hasWarnings ? (
-            <section className="rounded-3xl border border-amber-100 bg-amber-50/80 p-5 shadow-none">
-              <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-amber-700">
-                <ShieldAlert className="h-3.5 w-3.5" />
-                Review points
-              </p>
-              {currentTask.warnings.length > 0 ? (
-                <div className="mt-4">
-                  <p className="text-xs font-semibold text-amber-900">Unverified</p>
-                  <ul className="mt-2 space-y-1.5 list-disc pl-4 text-sm text-amber-800">
-                    {currentTask.warnings.map((warning) => (
-                      <li key={warning}>{warning}</li>
+          <SectionPanel
+            eyebrow="Evidence"
+            title="Sources and review points"
+            description="Cited references, uncertainty markers, and other review signals extracted from the execution."
+          >
+            <div className="space-y-5">
+              {currentTask.sources.length > 0 ? (
+                <section className="rounded-3xl border border-blue-100 bg-blue-50/70 p-5 shadow-none">
+                  <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-blue-700">
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    Cited sources
+                  </p>
+                  <ul className="mt-4 space-y-2">
+                    {currentTask.sources.map((source) => (
+                      <SourceItem key={source} source={source} />
                     ))}
                   </ul>
-                </div>
+                </section>
               ) : null}
-              {currentTask.assumptions.length > 0 ? (
-                <div className="mt-4">
-                  <p className="text-xs font-semibold text-amber-900">Assumptions / TBD</p>
-                  <ul className="mt-2 space-y-1.5 list-disc pl-4 text-sm text-amber-800">
-                    {currentTask.assumptions.map((assumption) => (
-                      <li key={assumption}>{assumption}</li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-            </section>
-          ) : null}
 
-          {!currentTask.sources.length && !hasWarnings ? (
-            <Card className="border-black/5 bg-white/92 shadow-none">
-              <CardContent className="p-5 text-sm text-slate-500">
-                No risk or structured source has been extracted for this task.
-              </CardContent>
-            </Card>
-          ) : null}
+              {hasWarnings ? (
+                <section className="rounded-3xl border border-amber-100 bg-amber-50/80 p-5 shadow-none">
+                  <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-amber-700">
+                    <ShieldAlert className="h-3.5 w-3.5" />
+                    Review points
+                  </p>
+                  {currentTask.warnings.length > 0 ? (
+                    <div className="mt-4">
+                      <p className="text-xs font-semibold text-amber-900">Unverified</p>
+                      <ul className="mt-2 space-y-1.5 list-disc pl-4 text-sm text-amber-800">
+                        {currentTask.warnings.map((warning) => (
+                          <li key={warning}>{warning}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                  {currentTask.assumptions.length > 0 ? (
+                    <div className="mt-4">
+                      <p className="text-xs font-semibold text-amber-900">Assumptions / TBD</p>
+                      <ul className="mt-2 space-y-1.5 list-disc pl-4 text-sm text-amber-800">
+                        {currentTask.assumptions.map((assumption) => (
+                          <li key={assumption}>{assumption}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
+
+              {!currentTask.sources.length && !hasWarnings ? (
+                <Card className="border-black/5 bg-white/92 shadow-none">
+                  <CardContent className="p-5 text-sm text-slate-500">
+                    No risk or structured source has been extracted for this task.
+                  </CardContent>
+                </Card>
+              ) : null}
+            </div>
+          </SectionPanel>
 
           {currentTask.error ? (
             <section className="rounded-3xl border border-red-100 bg-red-50/80 p-5 shadow-none">
@@ -739,40 +802,6 @@ export function TaskDetailView({ task, onTaskUpdated }: TaskDetailViewProps) {
               <FailureTraceback traceback={currentTask.error_traceback} />
             </section>
           ) : null}
-
-          {currentTask.status === "failed" ? (
-            <Card className="border-black/5 bg-white/92 shadow-none">
-              <CardContent className="flex flex-wrap items-center justify-between gap-3 p-5">
-                <div>
-                  <p className="text-sm font-semibold text-slate-900">Retry execution</p>
-                  <p className="mt-1 text-sm text-slate-500">
-                    Create a new task from the same scope and launch the engine again.
-                  </p>
-                </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="gap-2"
-                  onClick={handleRetry}
-                  disabled={retrying}
-                >
-                  {retrying ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <RotateCcw className="w-3.5 h-3.5" />
-                  )}
-                  Retry
-                </Button>
-              </CardContent>
-            </Card>
-          ) : null}
-
-          <Link href="/usage">
-            <Button variant="outline" className="rounded-full gap-2">
-              <Workflow className="size-4" />
-              Open AI Observability
-            </Button>
-          </Link>
         </div>
       ) : null}
     </div>

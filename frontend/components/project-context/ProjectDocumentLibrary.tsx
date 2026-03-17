@@ -4,11 +4,14 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { BookOpen, Eye, FileText, Loader2, Paperclip, Search, Send, Trash2, Users } from "lucide-react";
 
+import { buildAlexWorkspaceHref } from "@/components/chat/chat-shell";
 import type { Document, DocumentPreview } from "@/lib/api";
+import { StatBlock } from "@/components/layout/StatBlock";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { MarkdownContent } from "@/components/ui/markdown-content";
 
 interface ProjectDocumentLibraryProps {
   documents: Document[];
@@ -93,14 +96,14 @@ export function ProjectDocumentLibrary({
           <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
             <div className="space-y-2">
               <div className="flex flex-wrap items-center gap-2">
-                <CardTitle className="text-base">Document library</CardTitle>
+                <CardTitle className="text-base">Documents</CardTitle>
                 <Badge variant="outline" className="border-black/6 bg-white text-muted-foreground">
                   {documentCountLabel}
                 </Badge>
               </div>
 
               <CardDescription>
-                Documents added here become a clear foundation for chat, tasks, and context broadcasts to agents.
+                Library of shared sources used by Alex, task planning, and agent context refresh.
               </CardDescription>
             </div>
 
@@ -118,19 +121,38 @@ export function ProjectDocumentLibrary({
               <Input
                 value={uploadDescription}
                 onChange={(event) => onUploadDescriptionChange(event.target.value)}
-                placeholder="Helpful description for the next document"
+                placeholder="Optional description for the next source"
                 className="h-9 rounded-full bg-white"
               />
 
               <Button onClick={onUploadClick} disabled={isUploading} className="rounded-full gap-2">
                 {isUploading ? <Loader2 className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
-                {isUploading ? "Uploading…" : "Add"}
+                {isUploading ? "Uploading…" : "Add source"}
               </Button>
             </div>
           </div>
         </CardHeader>
 
         <CardContent className="space-y-4 pt-4">
+          <div className="grid gap-3 md:grid-cols-3">
+            <StatBlock
+              label="Library size"
+              value={documents.length}
+              description="Shared sources currently indexed"
+            />
+            <StatBlock
+              label="Visible now"
+              value={visibleDocuments.length}
+              description={isSearching ? "Results matching the current search" : "Documents shown in the current view"}
+            />
+            <StatBlock
+              label="Actions"
+              value={documents.length === 0 ? "Start" : "Ready"}
+              description="Preview, cite in Alex, use in team design, or refresh agent context"
+              tone={documents.length > 0 ? "accent" : "default"}
+            />
+          </div>
+
           {loading ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="size-4 animate-spin" />
@@ -150,7 +172,7 @@ export function ProjectDocumentLibrary({
                 <span>
                   {isSearching
                     ? `${filteredDocuments.length} result${filteredDocuments.length > 1 ? "s" : ""} for this search.`
-                    : "Compact view: the 5 most recent documents stay visible first."}
+                    : "Compact view keeps the newest sources in front."}
                 </span>
                 <span>Citation alias: `@document-name`</span>
               </div>
@@ -170,7 +192,7 @@ export function ProjectDocumentLibrary({
                     const isBriefing = briefingDocId === document.id;
                     const description =
                       document.description?.trim() ||
-                      "No description provided. The file remains available for chat and agent broadcasts.";
+                      "No description provided. The file remains available for Alex, planning, and agent context refresh.";
 
                     return (
                       <div key={document.id} className="px-4 py-4">
@@ -210,17 +232,17 @@ export function ProjectDocumentLibrary({
                               Preview
                             </Button>
 
-                            <Link href={`/chat?doc=${document.id}`}>
+                            <Link href={buildAlexWorkspaceHref({ docId: document.id })}>
                               <Button variant="outline" size="sm" className="rounded-full gap-2">
                                 <Send className="size-3.5" />
-                                Cite
+                                Open in Alex
                               </Button>
                             </Link>
 
-                            <Link href={`/team-builder?doc=${document.id}`}>
+                            <Link href={buildAlexWorkspaceHref({ mode: "design-team", docId: document.id })}>
                               <Button variant="outline" size="sm" className="rounded-full gap-2">
                                 <Users className="size-3.5" />
-                                Design team
+                                Open Team Design
                               </Button>
                             </Link>
 
@@ -232,7 +254,7 @@ export function ProjectDocumentLibrary({
                               onClick={() => onBriefAgents(document)}
                             >
                               {isBriefing ? <Loader2 className="size-3.5 animate-spin" /> : <BookOpen className="size-3.5" />}
-                              Broadcast
+                              Refresh agent context
                             </Button>
 
                             <Button
@@ -285,17 +307,17 @@ export function ProjectDocumentLibrary({
                               Preview
                             </Button>
 
-                            <Link href={`/chat?doc=${document.id}`}>
+                            <Link href={buildAlexWorkspaceHref({ docId: document.id })}>
                               <Button variant="outline" size="sm" className="rounded-full gap-2">
                                 <Send className="size-3.5" />
-                                Cite
+                                Open in Alex
                               </Button>
                             </Link>
 
-                            <Link href={`/team-builder?doc=${document.id}`}>
+                            <Link href={buildAlexWorkspaceHref({ mode: "design-team", docId: document.id })}>
                               <Button variant="outline" size="sm" className="rounded-full gap-2">
                                 <Users className="size-3.5" />
-                                Design team
+                                Open Team Design
                               </Button>
                             </Link>
 
@@ -307,7 +329,7 @@ export function ProjectDocumentLibrary({
                               onClick={() => onBriefAgents(document)}
                             >
                               {isBriefing ? <Loader2 className="size-3.5 animate-spin" /> : <BookOpen className="size-3.5" />}
-                              Broadcast
+                              Refresh agent context
                             </Button>
 
                             <Button
@@ -372,9 +394,7 @@ export function ProjectDocumentLibrary({
               ) : null}
 
               <div className="rounded-2xl border border-black/5 bg-[#f8f8f6] px-4 py-4">
-                <pre className="whitespace-pre-wrap text-sm leading-6 text-foreground">
-                  {preview.preview || "No text preview available."}
-                </pre>
+                <MarkdownContent content={preview.preview || "No text preview available."} className="prose-sm" />
               </div>
 
               {preview.truncated ? (

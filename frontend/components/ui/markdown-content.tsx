@@ -16,15 +16,15 @@ export function MarkdownContent({ content, className }: MarkdownContentProps) {
     <div
       className={cn(
         "prose prose-slate max-w-none",
-        "prose-headings:font-semibold prose-headings:text-slate-900",
-        "prose-p:text-slate-700 prose-p:leading-7",
-        "prose-li:text-slate-700 prose-li:leading-7",
-        "prose-strong:text-slate-900",
-        "prose-a:text-blue-600 hover:prose-a:text-blue-700",
-        "prose-code:text-slate-900",
+        "prose-headings:font-semibold prose-headings:text-[var(--ops-ink)]",
+        "prose-p:text-[var(--ops-muted-ink)] prose-p:leading-7",
+        "prose-li:text-[var(--ops-muted-ink)] prose-li:leading-7",
+        "prose-strong:text-[var(--ops-ink)]",
+        "prose-a:text-primary hover:prose-a:text-primary/80",
+        "prose-code:text-[var(--ops-ink)]",
         "prose-table:text-sm",
-        "prose-blockquote:border-l-slate-300 prose-blockquote:text-slate-600",
-        "[&_img]:rounded-xl [&_img]:border [&_img]:border-slate-200",
+        "prose-blockquote:border-l-[var(--ops-border-strong)] prose-blockquote:text-[var(--ops-muted-ink)]",
+        "[&_img]:rounded-[16px] [&_img]:border [&_img]:border-[var(--ops-border)]",
         className,
       )}
     >
@@ -38,7 +38,7 @@ export function MarkdownContent({ content, className }: MarkdownContentProps) {
               return (
                 <code
                   className={cn(
-                    "rounded-md bg-slate-100 px-1.5 py-0.5 text-[0.9em] font-medium text-slate-900",
+                    "rounded-md border border-[var(--ops-border)] bg-[var(--ops-surface-muted)] px-1.5 py-0.5 text-[0.9em] font-medium text-[var(--ops-ink)]",
                     codeClassName,
                   )}
                   {...rest}
@@ -50,7 +50,7 @@ export function MarkdownContent({ content, className }: MarkdownContentProps) {
             return (
               <code
                 className={cn(
-                  "block bg-transparent p-0 text-[13px] leading-6 text-slate-100 before:content-none after:content-none",
+                  "block bg-transparent p-0 text-[13px] leading-6 text-[var(--ops-ink)] before:content-none after:content-none",
                   codeClassName,
                 )}
                 {...rest}
@@ -64,7 +64,7 @@ export function MarkdownContent({ content, className }: MarkdownContentProps) {
             return (
               <pre
                 className={cn(
-                  "overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950 px-4 py-4 text-slate-100 shadow-sm",
+                  "overflow-x-auto rounded-[16px] border border-[var(--ops-border)] bg-[var(--ops-surface-strong)] px-4 py-4 text-[var(--ops-ink)] shadow-none",
                   preClassName,
                 )}
                 {...rest}

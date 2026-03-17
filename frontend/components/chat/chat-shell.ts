@@ -11,7 +11,15 @@ import {
   Users2,
 } from "lucide-react";
 
-export type ChatPanelMode = "chat" | "team-builder";
+import { getAlexWorkspaceLinks, type ProductNavItem } from "@/lib/config/product-navigation";
+
+export type ChatPanelMode = "chat" | "design-team";
+export type ChatEntryView = "plan" | "ask";
+export interface AlexWorkspaceHrefOptions {
+  view?: ChatEntryView;
+  mode?: ChatPanelMode;
+  docId?: string;
+}
 
 export interface ChatHomePrompt {
   id: string;
@@ -19,14 +27,6 @@ export interface ChatHomePrompt {
   description: string;
   prompt: string;
   Icon: LucideIcon;
-}
-
-export interface ChatWorkspaceLink {
-  href: string;
-  label: string;
-  description: string;
-  Icon: LucideIcon;
-  mode: ChatPanelMode;
 }
 
 const CHAT_HOME_PROMPTS: ChatHomePrompt[] = [
@@ -64,7 +64,38 @@ const CHAT_HOME_PROMPTS: ChatHomePrompt[] = [
   },
 ];
 
-const TEAM_BUILDER_HOME_PROMPTS: ChatHomePrompt[] = [
+const ASK_ALEX_HOME_PROMPTS: ChatHomePrompt[] = [
+  {
+    id: "clarify-direction",
+    title: "Clarify direction",
+    description: "Pressure-test a choice before committing execution capacity.",
+    prompt: "I need a sharp recommendation between several directions. Help me decide and explain the trade-offs.",
+    Icon: Compass,
+  },
+  {
+    id: "review-signal",
+    title: "Review a signal",
+    description: "Interpret a blocker, warning, or runtime signal quickly.",
+    prompt: "Help me understand this blocker or signal, what it means, and what I should do next.",
+    Icon: ClipboardList,
+  },
+  {
+    id: "read-document",
+    title: "Interrogate a document",
+    description: "Use Alex as a fast analytical layer over existing context.",
+    prompt: "I want to ask targeted questions about a document or brief and get concise operator guidance.",
+    Icon: BookOpenText,
+  },
+  {
+    id: "operator-brief",
+    title: "Get operator guidance",
+    description: "Ask for the next action without launching a broader planning sequence.",
+    prompt: "Given the current project state, what is the smartest next operator move right now?",
+    Icon: MessageSquarePlus,
+  },
+];
+
+const DESIGN_TEAM_HOME_PROMPTS: ChatHomePrompt[] = [
   {
     id: "mvp-team",
     title: "Compose an MVP team",
@@ -99,27 +130,56 @@ const TEAM_BUILDER_HOME_PROMPTS: ChatHomePrompt[] = [
   },
 ];
 
-const WORKSPACE_LINKS: ChatWorkspaceLink[] = [
-  {
-    href: "/chat",
-    label: "Alex orchestration",
-    description: "Scope tasks, arbitrate, and define next actions.",
-    Icon: MessageSquarePlus,
-    mode: "chat",
-  },
-  {
-    href: "/team-builder",
-    label: "Alex team design",
-    description: "Design or evolve the agent structure.",
-    Icon: Users2,
-    mode: "team-builder",
-  },
-];
+function getWorkspaceLinkIcon(itemId: string): LucideIcon {
+  switch (itemId) {
+    case "plan-work":
+      return MessageSquarePlus;
+    case "design-team":
+      return Users2;
+    case "ask-alex":
+      return Compass;
+    default:
+      return FolderKanban;
+  }
+}
 
-export function getChatHomePrompts(mode: ChatPanelMode): ChatHomePrompt[] {
-  return mode === "team-builder" ? TEAM_BUILDER_HOME_PROMPTS : CHAT_HOME_PROMPTS;
+export interface ChatWorkspaceLink extends ProductNavItem {
+  Icon: LucideIcon;
+  mode: ChatPanelMode;
+}
+
+export function buildAlexWorkspaceHref({
+  view = "plan",
+  mode = "chat",
+  docId,
+}: AlexWorkspaceHrefOptions = {}): string {
+  const params = new URLSearchParams();
+
+  if (mode === "design-team") {
+    params.set("mode", "design-team");
+  }
+  if (mode === "chat" && view === "ask") {
+    params.set("view", "ask");
+  }
+  if (docId) {
+    params.set("doc", docId);
+  }
+
+  const query = params.toString();
+  return query ? `/chat?${query}` : "/chat";
+}
+
+export function getChatHomePrompts(mode: ChatPanelMode, view: ChatEntryView = "plan"): ChatHomePrompt[] {
+  if (mode === "design-team") {
+    return DESIGN_TEAM_HOME_PROMPTS;
+  }
+  return view === "ask" ? ASK_ALEX_HOME_PROMPTS : CHAT_HOME_PROMPTS;
 }
 
 export function getWorkspaceLinks(): ChatWorkspaceLink[] {
-  return WORKSPACE_LINKS;
+  return getAlexWorkspaceLinks().map((item) => ({
+    ...item,
+    Icon: getWorkspaceLinkIcon(item.id),
+    mode: item.id === "design-team" ? "design-team" : "chat",
+  }));
 }

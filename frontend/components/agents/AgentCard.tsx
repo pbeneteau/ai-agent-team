@@ -2,15 +2,22 @@
 
 import { useState } from "react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { AgentStatusBadge } from "./AgentStatusBadge";
 import type { Agent, ModelTier } from "@/lib/api";
 import { api } from "@/lib/api";
-import { Bot, Crown, User, Zap, Sparkles } from "lucide-react";
+import { ArrowUpRight, Bot, Crown, Sparkles, User, Zap } from "lucide-react";
 
 const ROLE_ICON: Record<string, React.ReactNode> = {
   associate: <Crown className="w-4 h-4 text-amber-500" />,
   team_lead: <Bot className="w-4 h-4 text-blue-500" />,
   specialist: <User className="w-4 h-4 text-slate-500" />,
+};
+
+const ROLE_LABEL: Record<Agent["role"], string> = {
+  associate: "Associate",
+  team_lead: "Lead",
+  specialist: "Specialist",
 };
 
 const TIER_CONFIG: Record<ModelTier, { label: string; icon: React.ReactNode; className: string }> = {
@@ -56,7 +63,7 @@ export function AgentCard({ agent, onTierChange, onOpen }: Props) {
 
   return (
     <Card
-      className={`transition-all ${onOpen ? "cursor-pointer hover:-translate-y-0.5 hover:ring-foreground/20" : ""}`}
+      className={`transition-colors ${onOpen ? "cursor-pointer hover:border-[var(--ops-border-strong)] hover:bg-[var(--ops-surface-elevated)]" : ""}`}
       role={onOpen ? "button" : undefined}
       tabIndex={onOpen ? 0 : undefined}
       onClick={() => onOpen?.(agent)}
@@ -68,18 +75,38 @@ export function AgentCard({ agent, onTierChange, onOpen }: Props) {
         }
       }}
     >
-      <CardHeader className="pb-2 flex flex-row items-center gap-2">
-        {ROLE_ICON[agent.role] ?? <User className="w-4 h-4" />}
-        <div className="flex-1 min-w-0">
-          <p className="font-semibold text-sm truncate">{agent.name}</p>
-          <p className="text-xs text-muted-foreground truncate">{agent.title}</p>
+      <CardHeader className="flex flex-row items-start gap-2 pb-2">
+        <div className="mt-0.5">{ROLE_ICON[agent.role] ?? <User className="w-4 h-4" />}</div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="truncate text-sm font-semibold">{agent.name}</p>
+            <Badge variant="secondary" className="text-[10px]">
+              {ROLE_LABEL[agent.role]}
+            </Badge>
+          </div>
+          <p className="truncate text-xs text-muted-foreground">{agent.title}</p>
         </div>
         <AgentStatusBadge status={agent.status} occupancyStatus={agent.occupancy_status} />
       </CardHeader>
-      <CardContent className="pt-0 space-y-2">
-        <p className="text-xs text-muted-foreground">{agent.specialization.replace(/_/g, " ")}</p>
+      <CardContent className="space-y-3 pt-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="outline" className="text-[10px]">
+            {agent.specialization.replace(/_/g, " ")}
+          </Badge>
+          {agent.tools.slice(0, 2).map((tool) => (
+            <Badge key={tool} variant="secondary" className="text-[10px]">
+              {tool.replace(/_/g, " ")}
+            </Badge>
+          ))}
+          {agent.tools.length > 2 ? (
+            <Badge variant="secondary" className="text-[10px]">
+              +{agent.tools.length - 2}
+            </Badge>
+          ) : null}
+        </div>
+
         {agent.occupancy_status !== "idle" && (
-          <div className="rounded-md border border-blue-100 bg-blue-50/70 px-2 py-1.5 text-[11px] text-blue-900">
+          <div className="rounded-[12px] border ops-signal-info px-2.5 py-2 text-[11px]">
             <p className="font-medium">
               {agent.occupancy_status === "busy" ? "Working on" : "Selected for"}
               {" "}
@@ -91,8 +118,7 @@ export function AgentCard({ agent, onTierChange, onOpen }: Props) {
           </div>
         )}
 
-        <div className="flex items-center justify-between">
-          {/* Model tier toggle */}
+        <div className="flex items-center justify-between gap-3">
           <button
             onClick={toggleTier}
             disabled={switching}
@@ -102,20 +128,12 @@ export function AgentCard({ agent, onTierChange, onOpen }: Props) {
             {tier.icon}
             {tier.label}
           </button>
-
-          {/* Tools */}
-          <div className="flex flex-wrap gap-1 justify-end">
-            {agent.tools.slice(0, 2).map((tool) => (
-              <span key={tool} className="text-[10px] bg-slate-100 text-slate-600 rounded-md px-1.5 py-0.5">
-                {tool.replace(/_/g, " ")}
-              </span>
-            ))}
-            {agent.tools.length > 2 && (
-              <span className="text-[10px] bg-slate-100 text-slate-600 rounded-md px-1.5 py-0.5">
-                +{agent.tools.length - 2}
-              </span>
-            )}
-          </div>
+          {onOpen ? (
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500">
+              Agent page
+              <ArrowUpRight className="size-3.5" />
+            </span>
+          ) : null}
         </div>
       </CardContent>
     </Card>

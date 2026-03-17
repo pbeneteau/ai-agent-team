@@ -86,7 +86,7 @@ export function ProjectContextSummaryCard({ compact = false }: ProjectContextSum
         )}
 
         <div className="flex justify-end">
-          <Link href="/project-context">
+          <Link href="/project-context?section=brief">
             <Button variant={compact ? "outline" : "default"} className="gap-2">
               Open context hub
               <ArrowRight className="size-4" />

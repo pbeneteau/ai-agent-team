@@ -1,21 +1,26 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Cable,
+  GitBranch,
   Github,
   Loader2,
   PlugZap,
   RefreshCw,
   Save,
   Search,
+  ShieldAlert,
   Trash2,
 } from "lucide-react";
 
+import { DomainSecondaryNav } from "@/components/layout/DomainSecondaryNav";
+import { EmptyState } from "@/components/layout/EmptyState";
+import { SectionPanel } from "@/components/layout/SectionPanel";
+import { StatBlock } from "@/components/layout/StatBlock";
 import { WorkspacePageShell } from "@/components/layout/WorkspacePageShell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -73,7 +78,7 @@ const EMPTY_GIT_DRAFT: GitConnectionDraft = {
   notes: "",
 };
 
-type ActiveEditor = "github" | "gitlab" | "mcp:new" | `mcp:${string}` | null;
+type ActiveEditor = "git:new" | `git:${string}` | "mcp:new" | `mcp:${string}` | null;
 
 function getStatusBadgeClass(status: "healthy" | "degraded" | "unavailable" | "unknown"): string {
   switch (status) {
@@ -112,6 +117,14 @@ function getProviderLabel(provider: GitProvider): string {
 }
 
 export default function ConnectionsPage() {
+  return (
+    <Suspense fallback={<div className="h-full min-h-0 bg-[var(--ops-canvas)]" />}>
+      <ConnectionsPageContent />
+    </Suspense>
+  );
+}
+
+function ConnectionsPageContent() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -151,19 +164,14 @@ export default function ConnectionsPage() {
     load();
   }, [load]);
 
-  const githubConnection = useMemo(
-    () => gitConnections.find((item) => item.provider === "github") ?? null,
-    [gitConnections],
-  );
-  const gitlabConnection = useMemo(
-    () => gitConnections.find((item) => item.provider === "gitlab") ?? null,
-    [gitConnections],
-  );
   const selectedGitConnection = useMemo(() => {
-    if (activeEditor === "github") return githubConnection;
-    if (activeEditor === "gitlab") return gitlabConnection;
-    return null;
-  }, [activeEditor, githubConnection, gitlabConnection]);
+    if (!activeEditor?.startsWith("git:") || activeEditor === "git:new") {
+      return null;
+    }
+    const connectionId = activeEditor.slice(4);
+    return gitConnections.find((item) => item.id === connectionId) ?? null;
+  }, [activeEditor, gitConnections]);
+
   const selectedMcpConnection = useMemo(() => {
     if (!activeEditor?.startsWith("mcp:") || activeEditor === "mcp:new") {
       return null;
@@ -171,15 +179,12 @@ export default function ConnectionsPage() {
     const connectionId = activeEditor.slice(4);
     return mcpConnections.find((item) => item.id === connectionId) ?? null;
   }, [activeEditor, mcpConnections]);
-  const isGitDialogOpen = activeEditor === "github" || activeEditor === "gitlab";
+
+  const isGitDialogOpen = activeEditor === "git:new" || (activeEditor?.startsWith("git:") ?? false);
   const isMcpDialogOpen = activeEditor === "mcp:new" || (activeEditor?.startsWith("mcp:") ?? false);
 
   useEffect(() => {
-    if (activeEditor !== "mcp:new" && !selectedMcpConnection) {
-      setMcpDraft(EMPTY_MCP_DRAFT);
-      return;
-    }
-    if (activeEditor === "mcp:new") {
+    if (activeEditor === "mcp:new" || !selectedMcpConnection) {
       setMcpDraft(EMPTY_MCP_DRAFT);
       return;
     }
@@ -194,16 +199,8 @@ export default function ConnectionsPage() {
   }, [activeEditor, selectedMcpConnection]);
 
   useEffect(() => {
-    if (activeEditor !== "github" && activeEditor !== "gitlab") {
+    if (activeEditor === "git:new" || !selectedGitConnection) {
       setGitDraft(EMPTY_GIT_DRAFT);
-      return;
-    }
-    if (!selectedGitConnection) {
-      setGitDraft({
-        ...EMPTY_GIT_DRAFT,
-        provider: activeEditor,
-        base_url: activeEditor === "gitlab" ? "https://gitlab.com/api/v4" : "",
-      });
       return;
     }
     setGitDraft({
@@ -300,7 +297,7 @@ export default function ConnectionsPage() {
     setGitBusyAction(`delete:${connectionId}`);
     try {
       await api.deleteGitProviderConnection(connectionId);
-      if (activeEditor === "github" || activeEditor === "gitlab") {
+      if (activeEditor === `git:${connectionId}`) {
         setActiveEditor(null);
       }
       await load(true);
@@ -368,24 +365,32 @@ export default function ConnectionsPage() {
     }
   }
 
+  const totalConnections = gitConnections.length + mcpConnections.length;
+  const healthyConnections =
+    gitConnections.filter((connection) => connection.status === "healthy").length +
+    mcpConnections.filter((connection) => connection.status === "healthy").length;
+  const degradedConnections =
+    gitConnections.filter((connection) => connection.status === "degraded" || connection.status === "unavailable").length +
+    mcpConnections.filter((connection) => connection.status === "degraded" || connection.status === "unavailable").length;
+  const totalRepos = gitConnections.reduce((count, connection) => count + connection.discovered_repos.length, 0);
+  const totalTools = mcpConnections.reduce((count, connection) => count + connection.discovered_tools.length, 0);
+
   return (
     <WorkspacePageShell
-      title="Connections"
-      description="A simple list of available connections. GitHub and GitLab use one primary configurable connection each. MCP stays multi-connection."
+      title="Infrastructure"
+      description="Monitor connection health first, then open the editor surfaces for backend-executed MCP and git integrations."
       meta={
         <>
           <span>{mcpConnections.length} MCP connection(s)</span>
-          <span>{gitConnections.length} git provider connection(s)</span>
+          <span>{gitConnections.length} git connection(s)</span>
           <span>All remote actions are executed by the backend, never directly from the browser.</span>
         </>
       }
       actions={
-        <>
-          <Button variant="outline" size="sm" onClick={() => load(true)} className="gap-2 rounded-full">
-            {refreshing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-            Refresh
-          </Button>
-        </>
+        <Button variant="outline" size="sm" onClick={() => load(true)} className="gap-2 rounded-full">
+          {refreshing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+          Refresh
+        </Button>
       }
     >
       {error ? (
@@ -397,102 +402,174 @@ export default function ConnectionsPage() {
         </div>
       ) : null}
 
+      <DomainSecondaryNav domain="observability" />
+
       {loading ? (
         <div className="flex h-64 items-center justify-center">
           <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
         </div>
       ) : (
-        <div className="space-y-6">
-          <Card className="border-black/5 bg-white/92 shadow-[0_18px_46px_-34px_rgba(15,23,42,0.16)] ring-0">
-            <CardHeader className="border-b border-black/5 pb-3">
-              <h3 className="font-semibold text-slate-800">Available connections</h3>
-              <p className="text-xs text-slate-500">
-                GitHub and GitLab each use one primary connection. MCP stays multi-connection.
-              </p>
-            </CardHeader>
-            <CardContent className="space-y-3 pt-5">
-              <ProviderRow
-                icon={<Github className="h-4 w-4 text-slate-800" />}
-                title="GitHub"
+        <div className="space-y-5">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <StatBlock label="Configured" value={totalConnections} description="Total infrastructure connections" icon={<Cable className="size-4" />} />
+            <StatBlock
+              label="Healthy"
+              value={healthyConnections}
+              description="Connections currently passing health checks"
+              tone={healthyConnections > 0 ? "positive" : "default"}
+              icon={<ShieldAlert className="size-4" />}
+            />
+            <StatBlock
+              label="Needs attention"
+              value={degradedConnections}
+              description="Degraded or unavailable connections"
+              tone={degradedConnections > 0 ? "warning" : "default"}
+              icon={<PlugZap className="size-4" />}
+            />
+            <StatBlock
+              label="Indexed surface"
+              value={totalRepos + totalTools}
+              description={`${totalRepos} repo(s) and ${totalTools} tool(s) discovered`}
+              icon={<Search className="size-4" />}
+            />
+          </div>
+
+          <SectionPanel
+            eyebrow="System"
+            title="Infrastructure posture"
+            description="Read health and coverage first. Open configuration only when you need to edit or test a connection."
+            tone="subtle"
+          >
+            <div className="grid gap-4 xl:grid-cols-3">
+              <InfrastructurePill
+                title="Git providers"
                 description={
-                  githubConnection
-                    ? `${githubConnection.discovered_repos.length} repo(s) indexed, last test ${formatRelativeTimestamp(githubConnection.last_tested_at)}`
-                    : "No GitHub connection configured yet."
+                  gitConnections.length > 0
+                    ? `${gitConnections.filter((item) => item.status === "healthy").length} healthy connection(s), ${totalRepos} repo(s) indexed.`
+                    : "No git provider connection configured yet."
                 }
-                status={githubConnection?.status ?? "unknown"}
-                buttonLabel={githubConnection ? "Configured" : "Configure"}
-                onClick={() => setActiveEditor("github")}
+                icon={<GitBranch className="size-4" />}
               />
-              <ProviderRow
-                icon={<Github className="h-4 w-4 text-orange-600" />}
-                title="GitLab"
-                description={
-                  gitlabConnection
-                    ? `${gitlabConnection.discovered_repos.length} repo(s) indexed, last test ${formatRelativeTimestamp(gitlabConnection.last_tested_at)}`
-                    : "No GitLab connection configured yet."
-                }
-                status={gitlabConnection?.status ?? "unknown"}
-                buttonLabel={gitlabConnection ? "Configured" : "Configure"}
-                onClick={() => setActiveEditor("gitlab")}
-              />
-              <ProviderRow
-                icon={<Cable className="h-4 w-4 text-violet-600" />}
+              <InfrastructurePill
                 title="MCP"
                 description={
                   mcpConnections.length > 0
-                    ? `${mcpConnections.length} connection(s), ${mcpConnections.reduce((count, item) => count + item.discovered_tools.length, 0)} tool(s) discovered`
+                    ? `${mcpConnections.filter((item) => item.status === "healthy").length} healthy connection(s), ${totalTools} tool(s) discovered.`
                     : "No MCP connection configured yet."
                 }
-                status={mcpConnections.some((item) => item.status === "healthy") ? "healthy" : mcpConnections.length > 0 ? "degraded" : "unknown"}
-                buttonLabel={mcpConnections.length > 0 ? "Manage" : "Configure"}
-                onClick={() => setActiveEditor("mcp:new")}
+                icon={<Cable className="size-4" />}
               />
-            </CardContent>
-          </Card>
+              <InfrastructurePill
+                title="Execution model"
+                description="Remote actions stay backend-executed. Secrets are never re-exposed in the browser editor."
+                icon={<ShieldAlert className="size-4" />}
+              />
+            </div>
+          </SectionPanel>
 
-          <Card className="border-black/5 bg-white/92 shadow-[0_18px_46px_-34px_rgba(15,23,42,0.16)] ring-0">
-            <CardHeader className="border-b border-black/5 pb-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h3 className="font-semibold text-slate-800">MCP connections</h3>
-                  <p className="text-xs text-slate-500">
-                    MCP is multi-connection by design. Add as many backend-executed connections as needed.
-                  </p>
-                </div>
-                <Button
-                  size="sm"
-                  className="gap-2"
-                  onClick={() => {
-                    setMcpDraft(EMPTY_MCP_DRAFT);
-                    setActiveEditor("mcp:new");
-                  }}
-                >
-                  <Cable className="h-3.5 w-3.5" />
-                  Add MCP connection
-                </Button>
+          <SectionPanel
+            eyebrow="Inventory"
+            title="Git connections"
+            description="Status-first inventory for repository integrations. Multiple connections per provider are supported."
+            actions={
+              <Button
+                size="sm"
+                className="gap-2 rounded-full"
+                onClick={() => {
+                  setGitDraft(EMPTY_GIT_DRAFT);
+                  setActiveEditor("git:new");
+                }}
+              >
+                <Github className="h-3.5 w-3.5" />
+                Add git connection
+              </Button>
+            }
+          >
+            {gitConnections.length === 0 ? (
+              <EmptyState description="No git provider connection configured yet." />
+            ) : (
+              <div className="grid gap-4 xl:grid-cols-2">
+                {gitConnections.map((connection) => (
+                  <InventoryCard
+                    key={connection.id}
+                    title={connection.name}
+                    subtitle={`${getProviderLabel(connection.provider)} · ${connection.base_url}`}
+                    status={connection.status}
+                    metaItems={[
+                      `${connection.discovered_repos.length} repo(s)`,
+                      `${connection.total_repo_actions} remote action(s)`,
+                      `Last test ${formatRelativeTimestamp(connection.last_tested_at)}`,
+                    ]}
+                    error={connection.last_error}
+                    actions={
+                      <>
+                        <Button variant="outline" size="sm" onClick={() => setActiveEditor(`git:${connection.id}`)}>
+                          Configure
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleTestGit(connection.id)}
+                          disabled={gitBusyAction === `test:${connection.id}`}
+                          className="gap-2"
+                        >
+                          {gitBusyAction === `test:${connection.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlugZap className="h-3.5 w-3.5" />}
+                          Test
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleRefreshGitRepos(connection.id)}
+                          disabled={gitBusyAction === `refresh:${connection.id}`}
+                          className="gap-2"
+                        >
+                          {gitBusyAction === `refresh:${connection.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                          Refresh repos
+                        </Button>
+                      </>
+                    }
+                  />
+                ))}
               </div>
-            </CardHeader>
-            <CardContent className="space-y-3 pt-5">
-              {mcpConnections.length === 0 ? (
-                <EmptyState message="No MCP connection configured yet." />
-              ) : (
-                mcpConnections.map((connection) => (
-                  <div key={connection.id} className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
-                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="truncate text-sm font-semibold text-slate-900">{connection.name}</p>
-                          <Badge variant="outline" className={getStatusBadgeClass(connection.status)}>
-                            {connection.status}
-                          </Badge>
-                        </div>
-                        <p className="mt-1 truncate text-xs text-slate-500">{connection.endpoint_url}</p>
-                        <p className="mt-2 text-[11px] text-slate-500">
-                          {connection.discovered_tools.length} tool(s) · {connection.total_calls} call(s) · Last test{" "}
-                          {formatRelativeTimestamp(connection.last_tested_at)}
-                        </p>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
+            )}
+          </SectionPanel>
+
+          <SectionPanel
+            eyebrow="Inventory"
+            title="MCP connections"
+            description="Multi-connection inventory for backend-executed MCP endpoints and discovered tools."
+            actions={
+              <Button
+                size="sm"
+                className="gap-2 rounded-full"
+                onClick={() => {
+                  setMcpDraft(EMPTY_MCP_DRAFT);
+                  setActiveEditor("mcp:new");
+                }}
+              >
+                <Cable className="h-3.5 w-3.5" />
+                Add MCP connection
+              </Button>
+            }
+          >
+            {mcpConnections.length === 0 ? (
+              <EmptyState description="No MCP connection configured yet." />
+            ) : (
+              <div className="grid gap-4 xl:grid-cols-2">
+                {mcpConnections.map((connection) => (
+                  <InventoryCard
+                    key={connection.id}
+                    title={connection.name}
+                    subtitle={connection.endpoint_url}
+                    status={connection.status}
+                    metaItems={[
+                      `${connection.discovered_tools.length} tool(s)`,
+                      `${connection.total_calls} call(s)`,
+                      `Last test ${formatRelativeTimestamp(connection.last_tested_at)}`,
+                    ]}
+                    error={connection.last_error}
+                    actions={
+                      <>
                         <Button variant="outline" size="sm" onClick={() => setActiveEditor(`mcp:${connection.id}`)}>
                           Configure
                         </Button>
@@ -516,44 +593,51 @@ export default function ConnectionsPage() {
                           {mcpBusyAction === `discover:${connection.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
                           Discover
                         </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleDeleteMcp(connection.id)}
-                          disabled={mcpBusyAction === `delete:${connection.id}`}
-                          className="text-rose-600 hover:text-rose-700"
-                        >
-                          Delete
-                        </Button>
-                      </div>
-                    </div>
-
-                  </div>
-                ))
-              )}
-            </CardContent>
-          </Card>
+                      </>
+                    }
+                  />
+                ))}
+              </div>
+            )}
+          </SectionPanel>
         </div>
       )}
 
       <Dialog open={isGitDialogOpen} onOpenChange={(open) => { if (!open) setActiveEditor(null); }}>
         <DialogContent className="max-w-3xl">
           <DialogHeader>
-            <DialogTitle>{activeEditor === "github" ? "GitHub" : "GitLab"}</DialogTitle>
+            <DialogTitle>{selectedGitConnection ? selectedGitConnection.name : "New git connection"}</DialogTitle>
             <DialogDescription>
-              Configure the primary {activeEditor === "github" ? "GitHub" : "GitLab"} connection used by dev agents.
+              Configure a backend-executed git provider connection. Multiple connections per provider are supported.
             </DialogDescription>
           </DialogHeader>
 
           <div className="grid gap-4 md:grid-cols-2">
             <label className="space-y-2 md:col-span-1">
+              <span className="text-xs font-medium text-slate-600">Provider</span>
+              <select
+                value={gitDraft.provider}
+                disabled={Boolean(selectedGitConnection)}
+                onChange={(e) =>
+                  setGitDraft((current) => ({
+                    ...current,
+                    provider: e.target.value as GitProvider,
+                  }))
+                }
+                className="h-10 w-full rounded-xl border border-input bg-white px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30 disabled:opacity-70"
+              >
+                <option value="github">GitHub</option>
+                <option value="gitlab">GitLab</option>
+              </select>
+            </label>
+            <label className="space-y-2 md:col-span-1">
               <span className="text-xs font-medium text-slate-600">Name</span>
               <Input value={gitDraft.name} onChange={(e) => setGitDraft((current) => ({ ...current, name: e.target.value }))} />
             </label>
-            <label className="space-y-2 md:col-span-1">
+            <label className="space-y-2 md:col-span-2">
               <span className="text-xs font-medium text-slate-600">Base URL</span>
               <Input
-                placeholder={activeEditor === "github" ? "https://api.github.com" : "https://gitlab.com/api/v4"}
+                placeholder={gitDraft.provider === "github" ? "https://api.github.com" : "https://gitlab.com/api/v4"}
                 value={gitDraft.base_url}
                 onChange={(e) => setGitDraft((current) => ({ ...current, base_url: e.target.value }))}
               />
@@ -565,26 +649,14 @@ export default function ConnectionsPage() {
               <Input
                 type="password"
                 value={gitDraft.auth_token}
-                onChange={(e) =>
-                  setGitDraft((current) => ({
-                    ...current,
-                    auth_token: e.target.value,
-                    provider: activeEditor === "gitlab" ? "gitlab" : "github",
-                  }))
-                }
+                onChange={(e) => setGitDraft((current) => ({ ...current, auth_token: e.target.value }))}
               />
             </label>
             <label className="space-y-2 md:col-span-2">
               <span className="text-xs font-medium text-slate-600">Notes</span>
               <Textarea
                 value={gitDraft.notes}
-                onChange={(e) =>
-                  setGitDraft((current) => ({
-                    ...current,
-                    notes: e.target.value,
-                    provider: activeEditor === "gitlab" ? "gitlab" : "github",
-                  }))
-                }
+                onChange={(e) => setGitDraft((current) => ({ ...current, notes: e.target.value }))}
                 className="min-h-[100px]"
               />
             </label>
@@ -596,7 +668,6 @@ export default function ConnectionsPage() {
                   setGitDraft((current) => ({
                     ...current,
                     enabled: e.target.checked,
-                    provider: activeEditor === "gitlab" ? "gitlab" : "github",
                   }))
                 }
               />
@@ -606,7 +677,7 @@ export default function ConnectionsPage() {
 
           {selectedGitConnection ? (
             selectedGitConnection.discovered_repos.length === 0 ? (
-              <EmptyState message="No repository indexed yet. Run Refresh repos first." compact />
+              <EmptyState description="No repository indexed yet. Run Refresh repos first." />
             ) : (
               <div className="max-h-[280px] space-y-3 overflow-y-auto pr-1">
                 {selectedGitConnection.discovered_repos.map((repo) => (
@@ -780,39 +851,64 @@ export default function ConnectionsPage() {
   );
 }
 
-function ProviderRow({
-  icon,
+function InfrastructurePill({
   title,
   description,
-  status,
-  buttonLabel,
-  onClick,
+  icon,
 }: {
-  icon: ReactNode;
   title: string;
   description: string;
-  status: "healthy" | "degraded" | "unavailable" | "unknown";
-  buttonLabel: string;
-  onClick: () => void;
+  icon: ReactNode;
 }) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div className="flex items-start gap-3">
-          <div className="mt-0.5 rounded-xl bg-slate-50 p-2 text-slate-700">{icon}</div>
-          <div>
+    <div className="rounded-3xl border border-black/5 bg-white/88 px-4 py-4">
+      <div className="flex items-start gap-3">
+        <div className="rounded-2xl bg-slate-100 p-2 text-slate-700">{icon}</div>
+        <div>
+          <p className="text-sm font-semibold text-slate-900">{title}</p>
+          <p className="mt-1 text-sm leading-6 text-slate-600">{description}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InventoryCard({
+  title,
+  subtitle,
+  status,
+  metaItems,
+  error,
+  actions,
+}: {
+  title: string;
+  subtitle: string;
+  status: "healthy" | "degraded" | "unavailable" | "unknown";
+  metaItems: string[];
+  error: string | null;
+  actions: ReactNode;
+}) {
+  return (
+    <div className="rounded-3xl border border-slate-200 bg-white px-5 py-5">
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <p className="text-sm font-semibold text-slate-900">{title}</p>
+              <p className="truncate text-sm font-semibold text-slate-900">{title}</p>
               <Badge variant="outline" className={getStatusBadgeClass(status)}>
                 {status}
               </Badge>
             </div>
-            <p className="mt-1 text-xs leading-5 text-slate-500">{description}</p>
+            <p className="mt-1 text-xs text-slate-500">{subtitle}</p>
           </div>
         </div>
-        <Button variant={buttonLabel === "Configure" ? "default" : "outline"} onClick={onClick}>
-          {buttonLabel}
-        </Button>
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500">
+          {metaItems.map((item) => (
+            <span key={item}>{item}</span>
+          ))}
+        </div>
+        {error ? <p className="text-xs leading-5 text-rose-700">{error}</p> : null}
+        <div className="flex flex-wrap gap-2">{actions}</div>
       </div>
     </div>
   );
@@ -833,14 +929,6 @@ function GitRepoCard({ repo }: { repo: GitRemoteRepo }) {
         </Badge>
       </div>
       <p className="mt-3 text-[11px] text-slate-500">Clone URL: {repo.clone_url}</p>
-    </div>
-  );
-}
-
-function EmptyState({ message, compact = false }: { message: string; compact?: boolean }) {
-  return (
-    <div className={`rounded-2xl border border-dashed border-slate-200 bg-slate-50 text-sm text-slate-500 ${compact ? "px-4 py-5" : "px-4 py-6"}`}>
-      {message}
     </div>
   );
 }

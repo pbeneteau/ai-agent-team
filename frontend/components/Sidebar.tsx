@@ -20,7 +20,7 @@ export function Sidebar() {
   const pathname = usePathname();
 
   return (
-    <aside className="flex h-screen w-[92px] shrink-0 flex-col border-r border-[var(--ops-border)] bg-[var(--ops-canvas)] px-3 py-4 lg:w-[244px]">
+    <aside className="flex h-screen w-[84px] shrink-0 flex-col border-r border-[var(--ops-border)] bg-[color:rgba(248,246,239,0.8)] px-3 py-4 lg:w-[216px]">
       <div className="flex items-center gap-3 px-2 pb-4">
         <div className="flex size-11 shrink-0 items-center justify-center rounded-[18px] border border-[var(--ops-border)] bg-[var(--ops-surface-strong)] shadow-[0_18px_36px_-28px_rgba(15,23,42,0.3)]">
           <div className="flex size-8 items-center justify-center rounded-2xl bg-[radial-gradient(circle_at_top,rgba(120,119,255,0.5),rgba(15,23,42,0.98))] text-white">
@@ -29,13 +29,13 @@ export function Sidebar() {
         </div>
         <div className="hidden min-w-0 lg:block">
           <p className="text-sm font-semibold tracking-tight text-[var(--ops-ink)]">{OPS_DESK_TITLE}</p>
-          <p className="mt-1 text-xs leading-5 text-[var(--ops-muted-ink)]">
+          <p className="mt-1 text-[11px] leading-5 text-[var(--ops-muted-ink)]">
             {OPS_DESK_SUBTITLE}
           </p>
         </div>
       </div>
 
-      <nav className="mt-2 flex flex-1 flex-col gap-2">
+      <nav className="mt-2 flex flex-1 flex-col gap-1.5">
         {SIDEBAR_NAV_ITEMS.map(({ href, icon: Icon, label, description, aliases }) => {
           const isActive = aliases.some((matcher) => matcher.test(pathname));
           return (
@@ -45,17 +45,17 @@ export function Sidebar() {
               title={label}
               aria-label={label}
               className={cn(
-                "group flex items-center gap-3 rounded-[22px] border px-3 py-3 transition-all duration-200",
+                "group flex items-center gap-3 rounded-[18px] border px-3 py-2.5 transition-all duration-200",
                 isActive
-                  ? "border-[var(--ops-border-strong)] bg-[var(--ops-surface-strong)] text-primary shadow-[0_24px_36px_-30px_rgba(15,23,42,0.25)]"
-                  : "border-transparent text-[var(--ops-muted-ink)] hover:border-[var(--ops-border)] hover:bg-[var(--ops-surface)] hover:text-[var(--ops-ink)]"
+                  ? "border-[var(--ops-border)] bg-[var(--ops-surface-strong)] text-[var(--ops-ink)] shadow-[0_14px_28px_-24px_rgba(15,23,42,0.22)]"
+                  : "border-transparent text-[var(--ops-muted-ink)] hover:border-[var(--ops-border)] hover:bg-[color:rgba(255,255,252,0.82)] hover:text-[var(--ops-ink)]"
               )}
             >
               <div
                 className={cn(
-                  "flex size-11 shrink-0 items-center justify-center rounded-[18px] border transition-colors",
+                  "flex size-10 shrink-0 items-center justify-center rounded-[16px] border transition-colors",
                   isActive
-                    ? "border-[var(--ops-border)] bg-primary/10 text-primary"
+                    ? "border-[var(--ops-border)] bg-primary/8 text-primary"
                     : "border-transparent bg-[var(--ops-surface-muted)] text-[var(--ops-muted-ink)] group-hover:border-[var(--ops-border)] group-hover:bg-[var(--ops-surface-strong)]"
                 )}
               >
@@ -64,14 +64,16 @@ export function Sidebar() {
 
               <div className="hidden min-w-0 flex-1 lg:block">
                 <p className="truncate text-sm font-medium">{label}</p>
-                <p className="mt-1 truncate text-xs text-[var(--ops-muted-ink)]">{description}</p>
+                <p className="truncate text-[11px] text-[var(--ops-muted-ink)] opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100">
+                  {description}
+                </p>
               </div>
 
               <ChevronRight
                 className={cn(
                   "hidden size-4 shrink-0 transition-all lg:block",
                   isActive
-                    ? "translate-x-0 text-primary"
+                    ? "translate-x-0 text-[var(--ops-ink)]/60"
                     : "-translate-x-1 text-transparent group-hover:translate-x-0 group-hover:text-[var(--ops-muted-ink)]"
                 )}
               />
@@ -80,17 +82,17 @@ export function Sidebar() {
         })}
       </nav>
 
-      <div className="mt-auto flex items-center gap-3 rounded-[22px] border border-[var(--ops-border)] bg-[var(--ops-surface)] px-3 py-3">
+      <div className="mt-auto flex items-center gap-3 rounded-[18px] border border-[var(--ops-border)] bg-[color:rgba(255,255,252,0.72)] px-3 py-2.5">
         <button
           type="button"
           title="Profile"
-          className="flex size-11 shrink-0 items-center justify-center rounded-[18px] border border-[var(--ops-border)] bg-[var(--ops-surface-strong)] text-sm font-medium text-[var(--ops-ink)] shadow-[0_12px_26px_-24px_rgba(15,23,42,0.22)]"
+          className="flex size-10 shrink-0 items-center justify-center rounded-[16px] border border-[var(--ops-border)] bg-[var(--ops-surface-strong)] text-sm font-medium text-[var(--ops-ink)] shadow-[0_12px_24px_-24px_rgba(15,23,42,0.2)]"
         >
           PB
         </button>
         <div className="hidden min-w-0 lg:block">
           <p className="text-sm font-medium text-[var(--ops-ink)]">{OPERATOR_DESK_LABEL}</p>
-          <p className="mt-1 text-xs text-[var(--ops-muted-ink)]">{OPERATOR_DESK_SUBTITLE}</p>
+          <p className="mt-1 text-[11px] text-[var(--ops-muted-ink)]">{OPERATOR_DESK_SUBTITLE}</p>
         </div>
       </div>
     </aside>

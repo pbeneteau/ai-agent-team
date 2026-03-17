@@ -4,6 +4,7 @@ import {
   channelBadgeClass,
   formatChannelLabel,
   formatFailureKind,
+  formatRelativeTimestamp,
   recommendNextAction,
   shouldShowFailureMessage,
 } from "./usage-utils";
@@ -41,10 +42,10 @@ export function StructuredOutputFailureSummary({
   }
 
   return (
-    <div className="mt-3 rounded-xl border border-rose-100 bg-white/80 px-3 py-2">
+    <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-white/75 px-4 py-3">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-          Latest failure
+          Latest failure detail
         </span>
         <span
           className={failureBadgeClass(failure.error_kind)}
@@ -74,7 +75,7 @@ export function StructuredOutputFailureSummary({
           </span>
         ) : null}
         {failure.at ? (
-          <span>At {new Date(failure.at).toLocaleString("en-US")}</span>
+          <span>Seen {formatRelativeTimestamp(failure.at)}</span>
         ) : null}
       </div>
 

@@ -1,15 +1,18 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname, useSearchParams } from "next/navigation";
 import { BookOpenText, FileText, Plus, Wifi, WifiOff } from "lucide-react";
 
 import { getWorkspaceLinks, type ChatPanelMode } from "@/components/chat/chat-shell";
+import { isProductNavItemActive } from "@/lib/config/product-navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
 interface ChatSurfaceHeaderProps {
   mode: ChatPanelMode;
-  contextLabel: string;
+  workflowLabel: string;
+  statusLabel: string;
   isConnected: boolean;
   showDocs: boolean;
   documentCount: number;
@@ -20,7 +23,8 @@ interface ChatSurfaceHeaderProps {
 
 export function ChatSurfaceHeader({
   mode,
-  contextLabel,
+  workflowLabel,
+  statusLabel,
   isConnected,
   showDocs,
   documentCount,
@@ -28,44 +32,49 @@ export function ChatSurfaceHeader({
   onToggleDocs,
   onResetConversation,
 }: ChatSurfaceHeaderProps) {
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const documentCountLabel =
     documentCount > 0 ? `${documentCount} doc${documentCount > 1 ? "s" : ""}` : null;
-  const memoryScopeLabel =
-    mode === "team-builder"
-      ? "Local memory dedicated to team design"
-      : "Local memory dedicated to orchestration";
+  const workflowDescription =
+    mode === "design-team"
+      ? "Shape and validate the team directly inside Alex."
+      : workflowLabel === "Ask Alex"
+        ? "Use Alex for direct operator guidance."
+        : "Use Alex to scope and review execution before launch.";
 
   return (
-    <div className="border-b border-[var(--ops-border)] bg-[color:rgba(255,254,249,0.76)] px-5 py-4 backdrop-blur md:px-6">
+    <div className="border-b border-[var(--ops-border)] bg-[var(--ops-surface-strong)] px-4 py-3 md:px-5">
       <div className="mx-auto flex max-w-6xl flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
-        <div className="space-y-3">
+        <div className="space-y-2.5">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className="border-[var(--ops-border)] bg-[var(--ops-surface-strong)] text-[11px] tracking-wide text-[var(--ops-muted-ink)]">
-              {contextLabel}
+            <Badge variant="outline" className="tracking-wide text-[11px]">
+              {workflowLabel}
+            </Badge>
+            <Badge variant="secondary" className="text-[11px]">
+              {statusLabel}
             </Badge>
             <Badge
-              variant="outline"
-              className={
-                isConnected
-                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                  : "border-amber-200 bg-amber-50 text-amber-700"
-              }
+              variant={isConnected ? "positive" : "warning"}
             >
               {isConnected ? <Wifi className="size-3" /> : <WifiOff className="size-3" />}
               {isConnected ? "Connected" : "Reconnecting"}
             </Badge>
+            {attachedDocumentCount > 0 ? (
+              <Badge variant="outline" className="text-[11px]">
+                {attachedDocumentCount} attached
+              </Badge>
+            ) : null}
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          <p className="text-sm leading-6 text-[var(--ops-muted-ink)]">{workflowDescription}</p>
+
+          <div className="flex flex-wrap gap-1.5">
             {getWorkspaceLinks().map((link) => {
-              const isActive = link.mode === mode;
+              const isActive = isProductNavItemActive(link, pathname, searchParams);
               return (
-                <Link key={link.href} href={link.href}>
-                  <Button
-                    variant={isActive ? "secondary" : "outline"}
-                    size="sm"
-                    className="rounded-full gap-2"
-                  >
+                <Link key={link.id} href={link.href}>
+                  <Button variant={isActive ? "secondary" : "ghost"} size="sm" className="gap-2">
                     <link.Icon className="size-3.5" />
                     {link.label}
                   </Button>
@@ -75,40 +84,34 @@ export function ChatSurfaceHeader({
           </div>
         </div>
 
-        <div className="flex flex-col gap-2 xl:items-end">
-          <div className="flex flex-wrap items-center gap-2 xl:justify-end">
-            <Link href="/project-context">
-              <Button variant="outline" size="sm" className="rounded-full gap-2">
-                <BookOpenText className="size-3.5" />
-                Brief & Docs
-              </Button>
-            </Link>
-
-            <Button
-              variant={showDocs ? "secondary" : "outline"}
-              size="sm"
-              onClick={onToggleDocs}
-              aria-expanded={showDocs}
-              className="rounded-full gap-2"
-            >
-              <FileText className="size-3.5" />
-              Sources
-              {documentCountLabel ? (
-                <span className="rounded-full bg-white px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
-                  {documentCountLabel}
-                </span>
-              ) : null}
+        <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+          <Link href="/project-context?section=documents">
+            <Button variant="outline" size="sm" className="gap-2">
+              <BookOpenText className="size-3.5" />
+              Context
             </Button>
+          </Link>
 
-            <Button variant="default" size="sm" onClick={onResetConversation} className="rounded-full gap-2 shadow-sm">
-              <Plus className="size-3.5" />
-              New session
-            </Button>
-          </div>
+          <Button
+            variant={showDocs ? "secondary" : "outline"}
+            size="sm"
+            onClick={onToggleDocs}
+            aria-expanded={showDocs}
+            className="gap-2"
+          >
+            <FileText className="size-3.5" />
+            Sources
+            {documentCountLabel ? (
+              <span className="rounded-full bg-[var(--ops-surface-elevated)] px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                {documentCountLabel}
+              </span>
+            ) : null}
+          </Button>
 
-          <p className="text-xs leading-5 text-[var(--ops-muted-ink)] xl:text-right">
-            {memoryScopeLabel}. {attachedDocumentCount > 0 ? `${attachedDocumentCount} source(s) attached right now.` : "No sources attached for this turn."}
-          </p>
+          <Button variant="default" size="sm" onClick={onResetConversation} className="gap-2">
+            <Plus className="size-3.5" />
+            New session
+          </Button>
         </div>
       </div>
     </div>

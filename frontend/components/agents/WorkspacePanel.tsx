@@ -236,7 +236,7 @@ interface Props {
 
 export function WorkspacePanel({ agentId, agentName, onKnowledgeChanged }: Props) {
   const [info, setInfo] = useState<WorkspaceInfo | null>(null);
-  const [activeTab, setActiveTab] = useState<"overview" | "knowledge" | "files" | "settings">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "knowledge" | "files" | "capabilities" | "admin">("overview");
   const [skills, setSkills] = useState<SkillMeta[]>([]);
   const [viewingSkill, setViewingSkill] = useState<{ name: string; content: string } | null>(null);
   const [editingSkill, setEditingSkill] = useState<{ name: string; content: string } | null>(null);
@@ -721,6 +721,8 @@ export function WorkspacePanel({ agentId, agentName, onKnowledgeChanged }: Props
   const workLearningsSkill = skills.find((skill) => skill.name === "work_learnings") ?? null;
   const otherSkills = skills.filter((skill) => skill.name !== "work_learnings");
   const workLearningPreview = workLearningsContent ? extractWorkLearningPreview(workLearningsContent) : null;
+  const enabledGitBindingCount = gitBindings.filter((binding) => binding.enabled).length;
+  const enabledMcpBindingCount = mcpBindings.filter((binding) => binding.enabled).length;
 
   return (
     <div className="h-full min-h-0 flex flex-col overflow-hidden">
@@ -746,10 +748,17 @@ export function WorkspacePanel({ agentId, agentName, onKnowledgeChanged }: Props
 
       {/* Tabs */}
       <div className="flex border-b shrink-0">
-        {(["overview", "knowledge", "files", "settings"] as const).map((tab) => (
+        {(["overview", "knowledge", "files", "capabilities", "admin"] as const).map((tab) => (
           <button
             key={tab}
-            onClick={() => { setActiveTab(tab); setViewingSkill(null); setViewingFile(null); setFileContent(null); }}
+            onClick={() => {
+              setActiveTab(tab);
+              setViewingSkill(null);
+              setEditingSkill(null);
+              setNewSkillMode(false);
+              setViewingFile(null);
+              setFileContent(null);
+            }}
             className={`flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium border-b-2 transition-colors ${
               activeTab === tab
                 ? "border-indigo-600 text-indigo-600"
@@ -759,7 +768,8 @@ export function WorkspacePanel({ agentId, agentName, onKnowledgeChanged }: Props
             {tab === "overview" && <><Sparkles className="w-3.5 h-3.5" /> Overview</>}
             {tab === "knowledge" && <><Upload className="w-3.5 h-3.5" /> Knowledge</>}
             {tab === "files" && <><FolderOpen className="w-3.5 h-3.5" /> Files</>}
-            {tab === "settings" && <><BookOpen className="w-3.5 h-3.5" /> Skills & config</>}
+            {tab === "capabilities" && <><BookOpen className="w-3.5 h-3.5" /> Capabilities</>}
+            {tab === "admin" && <><Trash2 className="w-3.5 h-3.5" /> Admin</>}
           </button>
         ))}
       </div>
@@ -813,8 +823,11 @@ export function WorkspacePanel({ agentId, agentName, onKnowledgeChanged }: Props
               <Button variant="outline" size="sm" className="rounded-full" onClick={() => setActiveTab("files")}>
                 Browse files
               </Button>
-              <Button variant="outline" size="sm" className="rounded-full" onClick={() => setActiveTab("settings")}>
+              <Button variant="outline" size="sm" className="rounded-full" onClick={() => setActiveTab("capabilities")}>
                 Manage skills
+              </Button>
+              <Button variant="outline" size="sm" className="rounded-full" onClick={() => setActiveTab("admin")}>
+                Admin access
               </Button>
             </div>
           </div>
@@ -862,15 +875,17 @@ export function WorkspacePanel({ agentId, agentName, onKnowledgeChanged }: Props
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white p-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Quick configuration</p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Workspace structure</p>
               <div className="mt-3 space-y-3 text-sm text-slate-600">
                 <div className="rounded-xl bg-slate-50 px-3 py-3">
-                  <p className="font-medium text-slate-900">Documented skills</p>
-                  <p className="mt-1 text-xs text-slate-500">{skills.length} skill file(s) in the workspace.</p>
+                  <p className="font-medium text-slate-900">Capabilities</p>
+                  <p className="mt-1 text-xs text-slate-500">{skills.length} skill file(s) and learned behaviors.</p>
                 </div>
                 <div className="rounded-xl bg-slate-50 px-3 py-3">
-                  <p className="font-medium text-slate-900">Current path</p>
-                  <p className="mt-1 text-xs text-slate-500 break-all">{currentPath}</p>
+                  <p className="font-medium text-slate-900">Admin bindings</p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {enabledGitBindingCount} Git binding{enabledGitBindingCount > 1 ? "s" : ""} and {enabledMcpBindingCount} MCP tool{enabledMcpBindingCount > 1 ? "s" : ""}.
+                  </p>
                 </div>
               </div>
             </div>
@@ -878,288 +893,21 @@ export function WorkspacePanel({ agentId, agentName, onKnowledgeChanged }: Props
         </div>
       )}
 
-      {/* Settings tab */}
-      {activeTab === "settings" && (
+      {/* Capabilities tab */}
+      {activeTab === "capabilities" && (
         <div className="flex-1 flex flex-col min-h-0">
           <div className="flex items-center justify-between border-b bg-slate-50/70 px-4 py-3">
             <div>
-              <p className="text-sm font-medium text-slate-800">Skills & configuration</p>
+              <p className="text-sm font-medium text-slate-800">Capabilities</p>
               <p className="mt-1 text-xs text-slate-500">
-                Advanced area for editing skills and managing this agent.
+                Reusable skills, learned behavior, and operator-authored capability notes for this agent.
               </p>
             </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-slate-400 hover:text-red-600"
-              title="Delete this agent"
-              onClick={async () => {
-                if (!confirm(`Delete agent ${agentName}? This action cannot be undone.`)) return;
-                try {
-                  await api.deleteAgent(agentId);
-                  window.location.reload();
-                } catch (e) {
-                  alert(`Error: ${e}`);
-                }
-              }}
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="outline">{skills.length} skill file{skills.length > 1 ? "s" : ""}</Badge>
+              <Badge variant="outline">{agentName}</Badge>
+            </div>
           </div>
-          {!viewingSkill && !editingSkill && !newSkillMode && (
-            <div className="border-b bg-white px-4 py-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-medium text-slate-800">Git repositories</p>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Bind authorized GitHub or GitLab repositories to this agent for dev workflows.
-                  </p>
-                </div>
-                {savingGitBindings ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
-              </div>
-              {!gitProviderConnectionsEnabled ? (
-                <div className="mt-3 rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-xs text-slate-500">
-                  Git provider connections are not available.
-                </div>
-              ) : loadingGitBindings ? (
-                <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  Loading git provider connections…
-                </div>
-              ) : gitProviderConnections.length === 0 ? (
-                <div className="mt-3 rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-xs text-slate-500">
-                  No GitHub or GitLab connection has been configured yet.
-                </div>
-              ) : (
-                <div className="mt-3 space-y-3">
-                  {gitProviderConnections.map((connection) => (
-                    <div key={connection.id} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-semibold text-slate-900">{connection.name}</p>
-                          <p className="mt-1 text-[11px] text-slate-500">
-                            {connection.provider} · {connection.base_url}
-                          </p>
-                        </div>
-                        <Badge
-                          variant="outline"
-                          className={
-                            connection.status === "healthy"
-                              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                              : connection.status === "degraded"
-                                ? "border-amber-200 bg-amber-50 text-amber-700"
-                                : connection.status === "unavailable"
-                                  ? "border-rose-200 bg-rose-50 text-rose-700"
-                                  : "border-slate-200 bg-slate-100 text-slate-600"
-                          }
-                        >
-                          {connection.status}
-                        </Badge>
-                      </div>
-                      {connection.discovered_repos.length === 0 ? (
-                        <p className="mt-3 text-[11px] text-slate-500">
-                          No repository indexed yet for this connection.
-                        </p>
-                      ) : (
-                        <div className="mt-3 space-y-2">
-                          {connection.discovered_repos.map((repo) => {
-                            const activeBinding = gitBindings.find(
-                              (binding) =>
-                                binding.connection_id === connection.id &&
-                                binding.repo_full_name === repo.full_name &&
-                                binding.enabled,
-                            );
-                            return (
-                              <div
-                                key={`${connection.id}-${repo.full_name}`}
-                                className="rounded-lg border border-slate-200 bg-white px-3 py-3 text-xs text-slate-700"
-                              >
-                                <label className="flex items-start gap-2">
-                                  <input
-                                    type="checkbox"
-                                    checked={Boolean(activeBinding)}
-                                    disabled={savingGitBindings || connection.status === "unavailable"}
-                                    onChange={(e) => handleToggleGitRepo(connection.id, repo.full_name, e.target.checked)}
-                                  />
-                                  <div className="min-w-0 flex-1">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <span className="font-medium text-slate-900">{repo.full_name}</span>
-                                      <Badge variant="outline" className="border-slate-200 bg-slate-100 text-slate-600">
-                                        {repo.default_branch}
-                                      </Badge>
-                                    </div>
-                                    <a
-                                      href={repo.web_url}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      className="mt-1 inline-flex items-center gap-1 text-[11px] text-indigo-600 hover:text-indigo-700"
-                                    >
-                                      <GitBranch className="h-3 w-3" />
-                                      {repo.web_url}
-                                    </a>
-                                  </div>
-                                </label>
-                                {activeBinding ? (
-                                  <div className="mt-3 grid gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 md:grid-cols-[1fr_auto_auto]">
-                                    <label className="space-y-1">
-                                      <span className="text-[11px] font-medium text-slate-600">Branch prefix</span>
-                                      <Input
-                                        value={activeBinding.branch_prefix}
-                                        disabled={savingGitBindings}
-                                        onChange={(e) =>
-                                          handleGitBindingPermissionChange(
-                                            connection.id,
-                                            repo.full_name,
-                                            "branch_prefix",
-                                            e.target.value,
-                                          )
-                                        }
-                                        className="h-8 text-xs"
-                                      />
-                                    </label>
-                                    <label className="flex items-center gap-2 text-[11px] text-slate-700">
-                                      <input
-                                        type="checkbox"
-                                        checked={activeBinding.can_push}
-                                        disabled={savingGitBindings}
-                                        onChange={(e) =>
-                                          handleGitBindingPermissionChange(
-                                            connection.id,
-                                            repo.full_name,
-                                            "can_push",
-                                            e.target.checked,
-                                          )
-                                        }
-                                      />
-                                      Push
-                                    </label>
-                                    <label className="flex items-center gap-2 text-[11px] text-slate-700">
-                                      <input
-                                        type="checkbox"
-                                        checked={activeBinding.can_open_pr}
-                                        disabled={savingGitBindings}
-                                        onChange={(e) =>
-                                          handleGitBindingPermissionChange(
-                                            connection.id,
-                                            repo.full_name,
-                                            "can_open_pr",
-                                            e.target.checked,
-                                          )
-                                        }
-                                      />
-                                      <GitPullRequest className="h-3 w-3" />
-                                      PR / MR
-                                    </label>
-                                  </div>
-                                ) : null}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-          {!viewingSkill && !editingSkill && !newSkillMode && (
-            <div className="border-b bg-white px-4 py-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-medium text-slate-800">MCP tools</p>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Assign read-only MCP tools from the global connections catalog to this agent.
-                  </p>
-                </div>
-                {savingMcpBindings ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
-              </div>
-              {!mcpConnectionsEnabled ? (
-                <div className="mt-3 rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-xs text-slate-500">
-                  MCP connections are not available.
-                </div>
-              ) : loadingMcpBindings ? (
-                <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  Loading MCP connections…
-                </div>
-              ) : mcpConnections.length === 0 ? (
-                <div className="mt-3 rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-xs text-slate-500">
-                  No MCP connection has been configured yet.
-                </div>
-              ) : (
-                <div className="mt-3 space-y-3">
-                  {mcpConnections.map((connection) => {
-                    const readOnlyTools = connection.discovered_tools.filter((tool) => tool.read_only);
-                    return (
-                      <div key={connection.id} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-semibold text-slate-900">{connection.name}</p>
-                            <p className="mt-1 text-[11px] text-slate-500">{connection.endpoint_url}</p>
-                          </div>
-                          <Badge
-                            variant="outline"
-                            className={
-                              connection.status === "healthy"
-                                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                                : connection.status === "degraded"
-                                  ? "border-amber-200 bg-amber-50 text-amber-700"
-                                  : connection.status === "unavailable"
-                                    ? "border-rose-200 bg-rose-50 text-rose-700"
-                                    : "border-slate-200 bg-slate-100 text-slate-600"
-                            }
-                          >
-                            {connection.status}
-                          </Badge>
-                        </div>
-                        {readOnlyTools.length === 0 ? (
-                          <p className="mt-3 text-[11px] text-slate-500">
-                            No read-only tool discovered yet for this connection.
-                          </p>
-                        ) : (
-                          <div className="mt-3 space-y-2">
-                            {readOnlyTools.map((tool) => {
-                              const isChecked = mcpBindings.some(
-                                (binding) =>
-                                  binding.connection_id === connection.id &&
-                                  binding.tool_name === tool.name &&
-                                  binding.enabled,
-                              );
-                              return (
-                                <label
-                                  key={`${connection.id}-${tool.name}`}
-                                  className="flex items-start gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={isChecked}
-                                    disabled={savingMcpBindings || connection.status === "unavailable"}
-                                    onChange={(e) => handleToggleMcpTool(connection.id, tool.name, e.target.checked)}
-                                  />
-                                  <div className="min-w-0">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <span className="font-medium text-slate-900">{tool.name}</span>
-                                      <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">
-                                        read-only
-                                      </Badge>
-                                    </div>
-                                    <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
-                                      {tool.description || "No description provided by the MCP server."}
-                                    </p>
-                                  </div>
-                                </label>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
           {/* Viewing a skill — read or edit mode */}
           {viewingSkill && !editingSkill ? (
             <div className="flex flex-col min-h-0 flex-1">
@@ -1416,6 +1164,306 @@ export function WorkspacePanel({ agentId, agentName, onKnowledgeChanged }: Props
               })}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Admin tab */}
+      {activeTab === "admin" && (
+        <div className="flex-1 overflow-y-auto min-h-0 space-y-4 p-4">
+          <div className="rounded-[18px] border border-[var(--ops-border)] bg-[var(--ops-surface-muted)] p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-slate-800">Admin</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Permissions, external bindings, and destructive controls live here so they do not dominate the default workspace view.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="outline">{enabledGitBindingCount} Git binding{enabledGitBindingCount > 1 ? "s" : ""}</Badge>
+                <Badge variant="outline">{enabledMcpBindingCount} MCP tool{enabledMcpBindingCount > 1 ? "s" : ""}</Badge>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-[18px] border border-[var(--ops-border)] bg-[var(--ops-surface-elevated)] p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-slate-800">Git repositories</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Bind authorized GitHub or GitLab repositories to this agent for dev workflows.
+                </p>
+              </div>
+              {savingGitBindings ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
+            </div>
+            {!gitProviderConnectionsEnabled ? (
+              <div className="mt-3 rounded-[14px] border border-dashed border-[var(--ops-border-strong)] bg-[var(--ops-surface-muted)] px-3 py-4 text-xs text-slate-500">
+                Git provider connections are not available.
+              </div>
+            ) : loadingGitBindings ? (
+              <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Loading git provider connections…
+              </div>
+            ) : gitProviderConnections.length === 0 ? (
+              <div className="mt-3 rounded-[14px] border border-dashed border-[var(--ops-border-strong)] bg-[var(--ops-surface-muted)] px-3 py-4 text-xs text-slate-500">
+                No GitHub or GitLab connection has been configured yet.
+              </div>
+            ) : (
+              <div className="mt-3 space-y-3">
+                {gitProviderConnections.map((connection) => (
+                  <div key={connection.id} className="rounded-[14px] border border-[var(--ops-border)] bg-[var(--ops-surface-muted)] p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900">{connection.name}</p>
+                        <p className="mt-1 text-[11px] text-slate-500">
+                          {connection.provider} · {connection.base_url}
+                        </p>
+                      </div>
+                      <Badge
+                        variant="outline"
+                        className={
+                          connection.status === "healthy"
+                            ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                            : connection.status === "degraded"
+                              ? "border-amber-200 bg-amber-50 text-amber-700"
+                              : connection.status === "unavailable"
+                                ? "border-rose-200 bg-rose-50 text-rose-700"
+                                : "border-slate-200 bg-slate-100 text-slate-600"
+                        }
+                      >
+                        {connection.status}
+                      </Badge>
+                    </div>
+                    {connection.discovered_repos.length === 0 ? (
+                      <p className="mt-3 text-[11px] text-slate-500">
+                        No repository indexed yet for this connection.
+                      </p>
+                    ) : (
+                      <div className="mt-3 space-y-2">
+                        {connection.discovered_repos.map((repo) => {
+                          const activeBinding = gitBindings.find(
+                            (binding) =>
+                              binding.connection_id === connection.id &&
+                              binding.repo_full_name === repo.full_name &&
+                              binding.enabled,
+                          );
+                          return (
+                            <div
+                              key={`${connection.id}-${repo.full_name}`}
+                              className="rounded-[12px] border border-[var(--ops-border)] bg-[var(--ops-surface-elevated)] px-3 py-3 text-xs text-slate-700"
+                            >
+                              <label className="flex items-start gap-2">
+                                <input
+                                  type="checkbox"
+                                  checked={Boolean(activeBinding)}
+                                  disabled={savingGitBindings || connection.status === "unavailable"}
+                                  onChange={(e) => handleToggleGitRepo(connection.id, repo.full_name, e.target.checked)}
+                                />
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="font-medium text-slate-900">{repo.full_name}</span>
+                                    <Badge variant="outline" className="border-slate-200 bg-slate-100 text-slate-600">
+                                      {repo.default_branch}
+                                    </Badge>
+                                  </div>
+                                  <a
+                                    href={repo.web_url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="mt-1 inline-flex items-center gap-1 text-[11px] text-indigo-600 hover:text-indigo-700"
+                                  >
+                                    <GitBranch className="h-3 w-3" />
+                                    {repo.web_url}
+                                  </a>
+                                </div>
+                              </label>
+                              {activeBinding ? (
+                                <div className="mt-3 grid gap-3 rounded-[12px] border border-[var(--ops-border)] bg-[var(--ops-surface-muted)] px-3 py-3 md:grid-cols-[1fr_auto_auto]">
+                                  <label className="space-y-1">
+                                    <span className="text-[11px] font-medium text-slate-600">Branch prefix</span>
+                                    <Input
+                                      value={activeBinding.branch_prefix}
+                                      disabled={savingGitBindings}
+                                      onChange={(e) =>
+                                        handleGitBindingPermissionChange(
+                                          connection.id,
+                                          repo.full_name,
+                                          "branch_prefix",
+                                          e.target.value,
+                                        )
+                                      }
+                                      className="h-8 text-xs"
+                                    />
+                                  </label>
+                                  <label className="flex items-center gap-2 text-[11px] text-slate-700">
+                                    <input
+                                      type="checkbox"
+                                      checked={activeBinding.can_push}
+                                      disabled={savingGitBindings}
+                                      onChange={(e) =>
+                                        handleGitBindingPermissionChange(
+                                          connection.id,
+                                          repo.full_name,
+                                          "can_push",
+                                          e.target.checked,
+                                        )
+                                      }
+                                    />
+                                    Push
+                                  </label>
+                                  <label className="flex items-center gap-2 text-[11px] text-slate-700">
+                                    <input
+                                      type="checkbox"
+                                      checked={activeBinding.can_open_pr}
+                                      disabled={savingGitBindings}
+                                      onChange={(e) =>
+                                        handleGitBindingPermissionChange(
+                                          connection.id,
+                                          repo.full_name,
+                                          "can_open_pr",
+                                          e.target.checked,
+                                        )
+                                      }
+                                    />
+                                    <GitPullRequest className="h-3 w-3" />
+                                    PR / MR
+                                  </label>
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-[18px] border border-[var(--ops-border)] bg-[var(--ops-surface-elevated)] p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-slate-800">MCP tools</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Assign read-only MCP tools from the global connections catalog to this agent.
+                </p>
+              </div>
+              {savingMcpBindings ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
+            </div>
+            {!mcpConnectionsEnabled ? (
+              <div className="mt-3 rounded-[14px] border border-dashed border-[var(--ops-border-strong)] bg-[var(--ops-surface-muted)] px-3 py-4 text-xs text-slate-500">
+                MCP connections are not available.
+              </div>
+            ) : loadingMcpBindings ? (
+              <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Loading MCP connections…
+              </div>
+            ) : mcpConnections.length === 0 ? (
+              <div className="mt-3 rounded-[14px] border border-dashed border-[var(--ops-border-strong)] bg-[var(--ops-surface-muted)] px-3 py-4 text-xs text-slate-500">
+                No MCP connection has been configured yet.
+              </div>
+            ) : (
+              <div className="mt-3 space-y-3">
+                {mcpConnections.map((connection) => {
+                  const readOnlyTools = connection.discovered_tools.filter((tool) => tool.read_only);
+                  return (
+                    <div key={connection.id} className="rounded-[14px] border border-[var(--ops-border)] bg-[var(--ops-surface-muted)] p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">{connection.name}</p>
+                          <p className="mt-1 text-[11px] text-slate-500">{connection.endpoint_url}</p>
+                        </div>
+                        <Badge
+                          variant="outline"
+                          className={
+                            connection.status === "healthy"
+                              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                              : connection.status === "degraded"
+                                ? "border-amber-200 bg-amber-50 text-amber-700"
+                                : connection.status === "unavailable"
+                                  ? "border-rose-200 bg-rose-50 text-rose-700"
+                                  : "border-slate-200 bg-slate-100 text-slate-600"
+                          }
+                        >
+                          {connection.status}
+                        </Badge>
+                      </div>
+                      {readOnlyTools.length === 0 ? (
+                        <p className="mt-3 text-[11px] text-slate-500">
+                          No read-only tool discovered yet for this connection.
+                        </p>
+                      ) : (
+                        <div className="mt-3 space-y-2">
+                          {readOnlyTools.map((tool) => {
+                            const isChecked = mcpBindings.some(
+                              (binding) =>
+                                binding.connection_id === connection.id &&
+                                binding.tool_name === tool.name &&
+                                binding.enabled,
+                            );
+                            return (
+                              <label
+                                key={`${connection.id}-${tool.name}`}
+                                className="flex items-start gap-2 rounded-[12px] border border-[var(--ops-border)] bg-[var(--ops-surface-elevated)] px-3 py-2 text-xs text-slate-700"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  disabled={savingMcpBindings || connection.status === "unavailable"}
+                                  onChange={(e) => handleToggleMcpTool(connection.id, tool.name, e.target.checked)}
+                                />
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="font-medium text-slate-900">{tool.name}</span>
+                                    <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">
+                                      read-only
+                                    </Badge>
+                                  </div>
+                                  <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
+                                    {tool.description || "No description provided by the MCP server."}
+                                  </p>
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-[18px] border border-[var(--ops-signal-danger-border)] bg-[var(--ops-signal-danger-bg)] p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-rose-900">Destructive action</p>
+                <p className="mt-1 text-xs text-rose-700">
+                  Deleting the agent removes the workspace and cannot be undone.
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-2 rounded-full border-rose-200 bg-white text-rose-700 hover:bg-rose-100 hover:text-rose-800"
+                onClick={async () => {
+                  if (!confirm(`Delete agent ${agentName}? This action cannot be undone.`)) return;
+                  try {
+                    await api.deleteAgent(agentId);
+                    window.location.reload();
+                  } catch (e) {
+                    alert(`Error: ${e}`);
+                  }
+                }}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Delete agent
+              </Button>
+            </div>
+          </div>
         </div>
       )}
 

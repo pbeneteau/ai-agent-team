@@ -5,12 +5,12 @@ import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, Loader2, MessageSquare, RefreshCw, Trash2 } from "lucide-react";
 
+import { EmptyState } from "@/components/layout/EmptyState";
 import { TaskDetailView } from "@/components/tasks/TaskDetailView";
 import { STATUS_CONFIG } from "@/components/tasks/task-ui";
 import { WorkspacePageShell } from "@/components/layout/WorkspacePageShell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { api, extractApiErrorMessage, type Task } from "@/lib/api";
 import { useToast } from "@/lib/ws-context";
 
@@ -108,6 +108,9 @@ export default function TaskDetailPage() {
 
   return (
     <WorkspacePageShell
+      archetype="detail"
+      headerMode="compact"
+      bodyWidth="content"
       eyebrow={
         taskStatus ? (
           <Badge variant="outline" className={`text-xs ${taskStatus.className}`}>
@@ -128,7 +131,7 @@ export default function TaskDetailPage() {
       }
       actions={
         <>
-          <Link href="/tasks">
+          <Link href="/tasks?view=all">
             <Button variant="outline" className="rounded-full gap-2">
               <ArrowLeft className="size-4" />
               Back to tasks
@@ -170,11 +173,7 @@ export default function TaskDetailPage() {
       ) : task ? (
         <TaskDetailView task={task} onTaskUpdated={setTask} />
       ) : (
-        <Card className="border-black/5 bg-white/92 shadow-none">
-          <CardContent className="p-8 text-center text-sm text-slate-500">
-            This task is no longer available.
-          </CardContent>
-        </Card>
+        <EmptyState description="This task is no longer available." />
       )}
     </WorkspacePageShell>
   );

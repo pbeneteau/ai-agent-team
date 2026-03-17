@@ -137,7 +137,3 @@ export class WSClient<TMessage extends WSMessage = WSMessage> {
 export function createChatWS() {
   return new WSClient<ChatWSMessage>("/chat/ws");
 }
-
-export function createTeamBuilderWS() {
-  return new WSClient("/chat/team-builder/ws");
-}

@@ -1,10 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import { AlertTriangle, ExternalLink, Loader2, MessageSquare, RefreshCw, Trash2, Users } from "lucide-react";
 
+import { buildAlexWorkspaceHref } from "@/components/chat/chat-shell";
+import { DomainSecondaryNav } from "@/components/layout/DomainSecondaryNav";
+import { SectionPanel } from "@/components/layout/SectionPanel";
+import { StatBlock } from "@/components/layout/StatBlock";
 import { AgentCard } from "@/components/agents/AgentCard";
 import { WorkspaceInspectorDrawer } from "@/components/layout/WorkspaceInspectorDrawer";
 import { WorkspacePageShell } from "@/components/layout/WorkspacePageShell";
@@ -16,13 +20,21 @@ import { api, type Agent, type Team } from "@/lib/api";
 import { useWsEvent } from "@/lib/ws-context";
 
 export default function TeamPage() {
+  return (
+    <Suspense fallback={<div className="h-full min-h-0 bg-[var(--ops-canvas)]" />}>
+      <TeamPageContent />
+    </Suspense>
+  );
+}
+
+function TeamPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [teams, setTeams] = useState<Team[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"list" | "chart">("list");
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [orgRefreshKey, setOrgRefreshKey] = useState(0);
 
@@ -128,12 +140,13 @@ export default function TeamPage() {
   const allAgents = teams.flatMap((team) => team.agents).filter((agent) => agent.role !== "associate");
   const readyAgents = allAgents.filter((agent) => agent.status === "ready" && agent.occupancy_status === "idle");
   const busyAgents = allAgents.filter((agent) => agent.occupancy_status === "busy");
+  const activeSection = searchParams.get("section") === "agents" ? "agents" : "teams";
 
   return (
     <>
       <WorkspacePageShell
-        title="Teams & Agents"
-        description="Review team structure, inspect agent workspaces, and spot readiness gaps before execution."
+        title="Organization"
+        description="Review the team structure, inspect the agent roster, and understand how execution capacity is organized."
         meta={
           lastUpdatedAt ? (
             <>
@@ -144,14 +157,14 @@ export default function TeamPage() {
         }
         actions={
           <>
-            <Link href="/project-context">
+            <Link href="/project-context?section=brief">
               <Button variant="outline" className="gap-2 rounded-full">
                 <Users className="size-4" />
-                Brief & Documents
+                Open Context
               </Button>
             </Link>
-            <Link href="/team-builder">
-              <Button variant="outline" className="rounded-full">Design with Alex</Button>
+            <Link href={buildAlexWorkspaceHref({ mode: "design-team" })}>
+              <Button variant="outline" className="rounded-full">Open Design Team</Button>
             </Link>
             <Button variant="outline" className="gap-2 rounded-full" onClick={() => load(true)}>
               {refreshing ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
@@ -168,60 +181,61 @@ export default function TeamPage() {
         ) : null}
 
         <div className="grid gap-3 md:grid-cols-3">
-          <Card className="border-black/5 bg-white/92 shadow-none">
-            <CardContent className="p-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Active teams</p>
-              <p className="mt-3 text-2xl font-semibold text-slate-900">{loading ? "—" : teams.length}</p>
-            </CardContent>
-          </Card>
-          <Card className="border-black/5 bg-white/92 shadow-none">
-            <CardContent className="p-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Available agents</p>
-              <p className="mt-3 text-2xl font-semibold text-slate-900">{loading ? "—" : readyAgents.length}</p>
-            </CardContent>
-          </Card>
-          <Card className="border-black/5 bg-white/92 shadow-none">
-            <CardContent className="p-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Busy agents</p>
-              <p className="mt-3 text-2xl font-semibold text-slate-900">{loading ? "—" : busyAgents.length}</p>
-            </CardContent>
-          </Card>
+          <StatBlock label="Active teams" value={loading ? "—" : teams.length} />
+          <StatBlock label="Available agents" value={loading ? "—" : readyAgents.length} />
+          <StatBlock label="Busy agents" value={loading ? "—" : busyAgents.length} tone={busyAgents.length > 0 ? "accent" : "default"} />
         </div>
 
-        <div className="flex gap-1 border-b border-black/6">
-          {(["list", "chart"] as const).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`border-b-2 px-4 py-2 text-sm font-medium transition-colors ${
-                activeTab === tab
-                  ? "border-primary text-primary"
-                  : "border-transparent text-slate-500 hover:text-slate-700"
-              }`}
-            >
-              {tab === "list" ? "Operational view" : "Org chart"}
-            </button>
-          ))}
-        </div>
+        <DomainSecondaryNav domain="organization" />
 
         {loading ? (
           <div className="flex h-64 items-center justify-center">
             <Loader2 className="size-6 animate-spin text-slate-400" />
           </div>
-        ) : activeTab === "chart" ? (
-          <div className="h-[520px] overflow-hidden rounded-2xl border border-black/5 bg-white xl:h-[600px]">
-            <OrgChart
-              refreshKey={orgRefreshKey}
-              onAgentClick={(agentId) => {
-                const found = teams.flatMap((team) => team.agents).find((agent) => agent.id === agentId);
-                if (found) {
-                  handleOpenAgentPage(found);
-                  return;
-                }
-                router.push(`/team/agents/${agentId}`);
-              }}
-            />
-          </div>
+        ) : activeSection === "agents" ? (
+          allAgents.length === 0 ? (
+            <div className="rounded-2xl border border-black/5 bg-white px-6 py-16 text-center text-slate-500">
+              <p className="text-lg font-medium text-slate-900">No agent available yet</p>
+              <p className="mt-2 text-sm text-slate-400">
+                Launch Alex to define the first team, then come back here to inspect the roster.
+              </p>
+              <div className="mt-6 flex justify-center gap-2">
+                <Link href={buildAlexWorkspaceHref({ mode: "design-team" })}>
+                  <Button className="gap-2">
+                    <MessageSquare className="size-4" />
+                    Open Design Team
+                  </Button>
+                </Link>
+                <Link href="/project-context?section=brief">
+                  <Button variant="outline">Open Context</Button>
+                </Link>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <SectionPanel
+                eyebrow="Roster"
+                title="Agents"
+                description="Scan the current roster, open the agent page on click, or use the secondary preview when you only need a quick read."
+                tone="subtle"
+              >
+                <p className="text-sm leading-6 text-slate-600">
+                  The preview drawer is intentionally lightweight. Deep knowledge, files, capabilities, and admin controls live on the dedicated agent page.
+                </p>
+              </SectionPanel>
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                {allAgents.map((agent) => (
+                  <div key={agent.id} className="space-y-2">
+                    <AgentCard agent={agent} onOpen={handleOpenAgentPage} />
+                    <Button variant="outline" size="sm" className="w-full rounded-full gap-2" onClick={() => handleSelectAgent(agent)}>
+                      <ExternalLink className="size-3.5" />
+                      Open preview
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )
         ) : teams.length === 0 ? (
           <div className="rounded-2xl border border-black/5 bg-white px-6 py-16 text-center text-slate-500">
             <p className="text-lg font-medium text-slate-900">No team created</p>
@@ -235,13 +249,24 @@ export default function TeamPage() {
                   Open Alex
                 </Button>
               </Link>
-              <Link href="/project-context">
-                <Button variant="outline">Open Brief & Documents</Button>
+              <Link href="/project-context?section=brief">
+                <Button variant="outline">Open Context</Button>
               </Link>
             </div>
           </div>
         ) : (
           <div className="space-y-6">
+            <SectionPanel
+              eyebrow="Operational view"
+              title="Teams"
+              description="Primary management surface for team composition, scope, and current members."
+              tone="subtle"
+            >
+              <p className="text-sm leading-6 text-slate-600">
+                Open an agent card to inspect the dedicated agent page. Use the quick preview only for a fast roster read.
+              </p>
+            </SectionPanel>
+
             {teams.map((team) => {
               const leadAgents = team.agents.filter(
                 (agent) => agent.id === team.lead_agent_id || agent.role === "team_lead",
@@ -285,7 +310,7 @@ export default function TeamPage() {
                               <AgentCard agent={agent} onOpen={handleOpenAgentPage} />
                               <Button variant="outline" size="sm" className="w-full rounded-full gap-2" onClick={() => handleSelectAgent(agent)}>
                                 <ExternalLink className="size-3.5" />
-                                Quick preview
+                                Open preview
                               </Button>
                             </div>
                           ))
@@ -309,7 +334,7 @@ export default function TeamPage() {
                                 <AgentCard agent={agent} onOpen={handleOpenAgentPage} />
                                 <Button variant="outline" size="sm" className="w-full rounded-full gap-2" onClick={() => handleSelectAgent(agent)}>
                                   <ExternalLink className="size-3.5" />
-                                  Quick preview
+                                  Open preview
                                 </Button>
                               </div>
                             ))}
@@ -332,6 +357,27 @@ export default function TeamPage() {
                 </Card>
               );
             })}
+
+            <SectionPanel
+              eyebrow="Secondary"
+              title="Org chart"
+              description="Structural map of reporting lines and team composition. Keep it secondary to the operational team view."
+              tone="subtle"
+            >
+              <div className="h-[520px] overflow-hidden rounded-2xl border border-black/5 bg-white xl:h-[600px]">
+                <OrgChart
+                  refreshKey={orgRefreshKey}
+                  onAgentClick={(agentId) => {
+                    const found = teams.flatMap((team) => team.agents).find((agent) => agent.id === agentId);
+                    if (found) {
+                      handleOpenAgentPage(found);
+                      return;
+                    }
+                    router.push(`/team/agents/${agentId}`);
+                  }}
+                />
+              </div>
+            </SectionPanel>
 
             {teams.length > 0 ? (
               <Card className="border-black/5 bg-white/92 shadow-none">

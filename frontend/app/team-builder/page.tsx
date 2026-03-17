@@ -1,21 +1,28 @@
 "use client";
 
-import { Suspense } from "react";
-import { useRouter } from "next/navigation";
-import { TeamBuilderChat } from "@/components/chat/TeamBuilderChat";
+import { Suspense, useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+
+import { buildAlexWorkspaceHref } from "@/components/chat/chat-shell";
 
 export default function TeamBuilderPage() {
-  const router = useRouter();
-
   return (
     <div className="h-full min-h-0">
       <Suspense fallback={<div className="h-full min-h-0 bg-[var(--ops-canvas)]" />}>
-        <TeamBuilderChat
-          onTeamCreated={() => {
-            setTimeout(() => router.push("/team"), 2000);
-          }}
-        />
+        <TeamBuilderAlias />
       </Suspense>
     </div>
   );
+}
+
+function TeamBuilderAlias() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  useEffect(() => {
+    const docId = searchParams.get("doc") ?? undefined;
+    router.replace(buildAlexWorkspaceHref({ mode: "design-team", docId }));
+  }, [router, searchParams]);
+
+  return <div className="h-full min-h-0 bg-[var(--ops-canvas)]" />;
 }

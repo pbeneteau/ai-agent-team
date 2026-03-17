@@ -72,7 +72,7 @@
   --chart-3: oklch(0.546 0.245 262.881);
   --chart-4: oklch(0.488 0.243 264.376);
   --chart-5: oklch(0.424 0.199 265.638);
-  --radius: 0.625rem;
+  --radius: 0.5rem;
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
   --sidebar-primary: oklch(0.205 0 0);
@@ -81,15 +81,34 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
-  --ops-canvas: #f3f1ea;
-  --ops-surface: rgba(255, 255, 252, 0.86);
-  --ops-surface-strong: #fffef9;
-  --ops-surface-muted: #f8f6ef;
-  --ops-border: rgba(15, 23, 42, 0.08);
-  --ops-border-strong: rgba(15, 23, 42, 0.12);
+  --ops-canvas: #f2efe6;
+  --ops-surface: rgba(255, 255, 251, 0.92);
+  --ops-surface-strong: #fcfbf7;
+  --ops-surface-muted: #f3efe5;
+  --ops-surface-elevated: #ffffff;
+  --ops-border: rgba(15, 23, 42, 0.09);
+  --ops-border-soft: rgba(15, 23, 42, 0.055);
+  --ops-border-strong: rgba(15, 23, 42, 0.14);
   --ops-ink: #0f172a;
-  --ops-muted-ink: #516173;
-  --ops-shadow: 0 26px 72px -46px rgba(15, 23, 42, 0.28);
+  --ops-muted-ink: #556272;
+  --ops-soft-ink: #738092;
+  --ops-shadow: 0 12px 30px -28px rgba(15, 23, 42, 0.16);
+  --ops-control: #f7f4ec;
+  --ops-control-hover: #f3efe4;
+  --ops-control-border: rgba(15, 23, 42, 0.1);
+  --ops-control-border-strong: rgba(15, 23, 42, 0.16);
+  --ops-signal-info-bg: #eef4ff;
+  --ops-signal-info-border: #c8d7f3;
+  --ops-signal-info-ink: #24446f;
+  --ops-signal-positive-bg: #edf8f1;
+  --ops-signal-positive-border: #c6dfce;
+  --ops-signal-positive-ink: #21523a;
+  --ops-signal-warning-bg: #fff4dd;
+  --ops-signal-warning-border: #efd5a4;
+  --ops-signal-warning-ink: #764b09;
+  --ops-signal-danger-bg: #fceeee;
+  --ops-signal-danger-border: #ebc0c0;
+  --ops-signal-danger-ink: #7a2525;
 }
 
 .dark {
@@ -153,5 +172,34 @@
   .ops-muted-panel {
     background: var(--ops-surface-muted);
     border-color: var(--ops-border);
+  }
+
+  .ops-control {
+    background: var(--ops-control);
+    border-color: var(--ops-control-border);
+  }
+
+  .ops-signal-info {
+    background: var(--ops-signal-info-bg);
+    border-color: var(--ops-signal-info-border);
+    color: var(--ops-signal-info-ink);
+  }
+
+  .ops-signal-positive {
+    background: var(--ops-signal-positive-bg);
+    border-color: var(--ops-signal-positive-border);
+    color: var(--ops-signal-positive-ink);
+  }
+
+  .ops-signal-warning {
+    background: var(--ops-signal-warning-bg);
+    border-color: var(--ops-signal-warning-border);
+    color: var(--ops-signal-warning-ink);
+  }
+
+  .ops-signal-danger {
+    background: var(--ops-signal-danger-bg);
+    border-color: var(--ops-signal-danger-border);
+    color: var(--ops-signal-danger-ink);
   }
 }
