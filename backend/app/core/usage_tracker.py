@@ -165,27 +165,6 @@ class UsageTracker:
 
         logger.debug(f"[usage] {model} +{input_tokens}in +{output_tokens}out ${cost:.6f}")
 
-    def log_crewai_usage(self, model: str, usage: Any):
-        """
-        Log token usage produced by CrewAI / LiteLLM wrappers.
-        Accepts either a dict-like object or an object with CrewAI-style
-        `prompt_tokens` / `completion_tokens` attributes.
-        """
-        if usage is None:
-            return
-
-        if isinstance(usage, dict):
-            input_tokens = int(usage.get("prompt_tokens", 0) or 0)
-            output_tokens = int(usage.get("completion_tokens", 0) or 0)
-        else:
-            input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
-            output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
-
-        if input_tokens <= 0 and output_tokens <= 0:
-            return
-
-        self.log(model, input_tokens, output_tokens)
-
     def log_structured_output(
         self,
         *,

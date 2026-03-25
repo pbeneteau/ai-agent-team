@@ -41,12 +41,6 @@ def test_list_teams_returns_list(client: TestClient):
     assert isinstance(r.json(), list)
 
 
-def test_organigramme_returns_list(client: TestClient):
-    r = client.get("/api/teams/organigramme")
-    assert r.status_code == 200
-    assert isinstance(r.json(), list)
-
-
 def test_project_context_returns_dict(client: TestClient):
     r = client.get("/api/teams/project-context")
     assert r.status_code == 200
@@ -103,93 +97,35 @@ def test_capabilities_returns_dict(client: TestClient):
 
 
 # ---------------------------------------------------------------------------
-# Tasks
+# Artifacts
 # ---------------------------------------------------------------------------
 
-def test_list_tasks_returns_list(client: TestClient):
-    r = client.get("/api/tasks/")
-    assert r.status_code == 200
-    assert isinstance(r.json(), list)
-
-
-def test_create_task_returns_task_object(client: TestClient):
-    payload = {
-        "title": "Smoke test task",
-        "description": "Created by smoke tests — should not be executed.",
-        "priority": "low",
-        "execution_mode": "standalone",
-    }
-    r = client.post("/api/tasks/", json=payload)
-    assert r.status_code == 200
-    body = r.json()
-    assert body["title"] == payload["title"]
-    assert body["status"] == "pending"
-    assert body["execution_mode"] == "standalone"
-    assert body["execution_plan"]["status"] == "not_planned"
-    assert "id" in body
-    # cleanup
-    client.delete(f"/api/tasks/{body['id']}")
-
-
-def test_get_unknown_task_returns_404(client: TestClient):
-    r = client.get("/api/tasks/00000000-0000-0000-0000-000000000000")
+def test_get_unknown_artifact_returns_404(client: TestClient):
+    r = client.get("/api/artifacts/00000000-0000-0000-0000-000000000000")
     assert r.status_code == 404
 
 
-def test_execute_unknown_task_returns_404(client: TestClient):
-    r = client.post("/api/tasks/00000000-0000-0000-0000-000000000000/execute")
-    assert r.status_code == 404
-
-
-def test_execute_task_rejects_ineligible_task(client: TestClient):
-    payload = {
-        "title": "Blocked execution",
-        "description": "Should require an explicit owner before execution.",
-        "priority": "low",
-    }
-    created = client.post("/api/tasks/", json=payload)
-    assert created.status_code == 200
-    task_id = created.json()["id"]
-
-    executed = client.post(f"/api/tasks/{task_id}/execute")
-    assert executed.status_code == 400
-    assert "équipe" in executed.json()["detail"].lower() or "agent" in executed.json()["detail"].lower()
-
-    client.delete(f"/api/tasks/{task_id}")
-
-
-def test_delete_running_task_returns_409(client: TestClient):
-    from app.core.orchestrator import get_orchestrator
-    from app.models.task import TaskStatus
-
-    payload = {
-        "title": "Delete guard",
-        "description": "Should not delete a running task.",
-        "priority": "low",
-    }
-    created = client.post("/api/tasks/", json=payload)
-    assert created.status_code == 200
-    task_id = created.json()["id"]
-
-    task = get_orchestrator().get_task(task_id)
-    assert task is not None
-    task.status = TaskStatus.RUNNING
-
-    deleted = client.delete(f"/api/tasks/{task_id}")
-    assert deleted.status_code == 409
-    assert "running" in deleted.json()["detail"].lower()
-
-    task.status = TaskStatus.FAILED
-    client.delete(f"/api/tasks/{task_id}")
-
-
-def test_create_task_invalid_priority(client: TestClient):
-    r = client.post("/api/tasks/", json={
-        "title": "Bad",
-        "description": "test",
-        "priority": "EXTREME",
+def test_create_artifact_requires_existing_project(client: TestClient):
+    r = client.post("/api/artifacts/", json={
+        "project_id": "00000000-0000-0000-0000-000000000000",
+        "title": "Ghost artifact",
     })
-    assert r.status_code == 422
+    assert r.status_code == 404
+    assert "project" in r.json()["detail"].lower()
+
+
+def test_iterate_unknown_artifact_returns_404(client: TestClient):
+    r = client.post(
+        "/api/artifacts/00000000-0000-0000-0000-000000000000/iterate",
+        json={"instruction": "Make it better"},
+    )
+    assert r.status_code == 404
+
+
+def test_diff_same_version_returns_400(client: TestClient):
+    r = client.get("/api/artifacts/some-id/diff?v1=1&v2=1")
+    assert r.status_code == 400
+    assert "different" in r.json()["detail"].lower()
 
 
 # ---------------------------------------------------------------------------

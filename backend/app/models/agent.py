@@ -99,6 +99,17 @@ class AgentResponse(BaseModel):
     max_iter: int = 5
 
 
+class AgentLearningProfile(BaseModel):
+    agent_id: str
+    completed_task_nodes: int = 0
+    avg_quality_score: Optional[float] = None
+    last_5_learnings: list[str] = Field(default_factory=list)
+    readiness_score: Optional[int] = None
+    progression_level: str = "apprenti"  # apprenti | operationnel | expert
+    last_reflection_at: Optional[str] = None
+    episode_count: int = 0
+
+
 class AgentModelUpdate(BaseModel):
     model_tier: ModelTier
 

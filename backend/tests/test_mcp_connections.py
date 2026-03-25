@@ -244,7 +244,7 @@ def test_registry_builds_mcp_tool_and_records_usage(tmp_path, monkeypatch):
         [AgentMcpToolBinding(connection_id=connection_id, tool_name="list_projects")]
     )
     assert len(tools) == 1
-    result = tools[0].func(arguments_json='{"limit": 3}')
+    result = tools[0].executor(arguments_json='{"limit": 3}')
     assert "projects for list_projects" in result
 
     from app.core.mcp_connection_store import get_mcp_connection_store

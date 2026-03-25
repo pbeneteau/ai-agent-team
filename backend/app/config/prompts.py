@@ -181,6 +181,9 @@ Assumptions:
 Warnings:
 {warnings}
 
+Node execution status: {node_status}
+Quality score: {quality_score}
+
 Existing work learnings:
 {existing_work_learnings}
 
@@ -190,6 +193,8 @@ Your job:
 - It is acceptable to keep a technical or process learning without an external source if it is clearly stable and reusable
 - Never store raw deliverable text, one-off task details, vague summaries, or unverified assumptions as facts
 - Be selective: returning nothing is better than storing noisy memory
+- If node_status is "failed", focus exclusively on cautions: what went wrong, what should be avoided, and what guardrails could prevent this failure class in the future. Do not extract positive insights from a failed execution.
+- If quality_score is a number below 40, weight cautions more heavily than insights.
 
 Return ONLY valid JSON in this exact format:
 {{
@@ -209,6 +214,73 @@ LEARN_FROM_WORK_SCHEMA_HINT = """{
   "insights": ["string"],
   "cautions": ["string"]
 }"""
+
+AGENT_REFLECTION_PROMPT = """You are performing a periodic self-reflection for an AI agent.
+
+Agent: {agent_name} ({agent_title})
+Specialization: {agent_specialization}
+
+## Current core_skills
+{core_skills}
+
+## Work learnings
+{work_learnings}
+
+## Task history (episodes)
+{episodes}
+
+## Team knowledge
+{team_knowledge}
+
+Your job:
+1. Identify recurring patterns across episodes and learnings
+2. Promote durable patterns to core_skills (add new sections or strengthen existing ones)
+3. Identify obsolete or contradicted items in core_skills and remove them
+4. Identify learnings that have been superseded by newer evidence and flag for removal
+5. Output the updated core_skills.md content only
+
+Rules:
+- Be conservative: only promote patterns seen in 2+ episodes
+- Remove items only when clearly contradicted or superseded
+- Keep the file under 3000 characters
+- Preserve the original structure and section headers where possible
+- Do NOT invent numbers, statistics, or external facts
+- Output only the Markdown content, no preamble
+"""
+
+SMART_SKILLS_SELECT_PROMPT = """Select the most relevant sections from an agent's core skills for the current task.
+
+Task: {task_context}
+
+Full core_skills content:
+{core_skills}
+
+Return ONLY the selected sections, preserving their original Markdown formatting.
+Stay under {budget} characters. Prefer sections that directly apply to this task.
+Do not add commentary — output only the selected Markdown sections.
+"""
+
+CONSOLIDATE_CORE_SKILLS_PROMPT = """You are curating the permanent expertise file for an AI agent.
+
+Agent: {agent_name} ({agent_title})
+Specialization: {agent_specialization}
+
+## Current core_skills.md
+{core_skills}
+
+## Work learnings accumulated over recent tasks
+{work_learnings}
+
+Your job:
+- Merge durable, role-specific insights from work_learnings into core_skills
+- Promote patterns that appeared consistently (not one-off observations)
+- Remove any items from core_skills that are contradicted by newer learnings
+- Keep the result structured with clear ## sections
+- Output only the updated core_skills.md content (Markdown, no preamble)
+- Stay under 3000 characters
+- Preserve the original core_skills structure where possible
+- Do NOT invent numbers, statistics, or external facts
+"""
 
 TARGETED_REBRIEFING_PROMPT = """You are {agent_name}, a {agent_title} in an AI agent team.
 
@@ -479,6 +551,7 @@ Instructions:
 - If requested_mode is "auto", prefer empty depends_on lists unless a dependency is clearly necessary.
 - If requested_mode is "dependency_graph", you may add sparse dependencies when they materially improve quality.
 - Omit specialists that are not useful for this task.
+- Specialists marked "⚠ low readiness" have limited knowledge of the project context. Avoid assigning them to critical or high-stakes subtasks; prefer assigning them only when no better-prepared specialist is available for that role.
 
 Return ONLY valid JSON with this exact shape:
 {{

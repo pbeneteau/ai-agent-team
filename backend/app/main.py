@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.api.routes import agents, chat, documents, git_providers, mcp, tasks, teams, usage
+from app.api.routes import agents, artifacts, documents, git_providers, labels, mcp, projects, task_comments, task_relations, teams, usage
 from app.core.agent_factory import get_agent_factory
 from app.core.orchestrator import get_orchestrator
 
@@ -60,10 +60,13 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.include_router(chat.router, prefix="/api")
+    app.include_router(artifacts.router, prefix="/api")
+    app.include_router(task_comments.router, prefix="/api")
     app.include_router(agents.router, prefix="/api")
     app.include_router(teams.router, prefix="/api")
-    app.include_router(tasks.router, prefix="/api")
+    app.include_router(task_relations.router, prefix="/api")
+    app.include_router(projects.router, prefix="/api")
+    app.include_router(labels.router, prefix="/api")
     app.include_router(documents.router, prefix="/api")
     app.include_router(usage.router, prefix="/api")
     app.include_router(mcp.router, prefix="/api")

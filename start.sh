@@ -31,9 +31,10 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload &
 BACKEND_PID=$!
 cd ..
 
-# Frontend
-echo "Starting frontend (Next.js)..."
-cd frontend
+# Frontend V2
+FRONTEND_DIR="frontend"
+echo "Starting frontend (${FRONTEND_DIR}, Next.js)..."
+cd "$FRONTEND_DIR"
 if [ ! -d node_modules ]; then
     npm install -q
 fi
@@ -44,7 +45,7 @@ cd ..
 echo ""
 echo "✅ Services started:"
 echo "   Backend:  http://localhost:8000"
-echo "   Frontend: http://localhost:3000"
+echo "   Frontend: http://localhost:3000 (${FRONTEND_DIR})"
 echo "   API Docs: http://localhost:8000/docs"
 echo ""
 echo "Press Ctrl+C to stop all services."

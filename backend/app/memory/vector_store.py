@@ -1,3 +1,5 @@
+import re
+
 import chromadb
 from chromadb.config import Settings as ChromaSettings
 from functools import lru_cache
@@ -41,6 +43,39 @@ class VectorStore:
         except Exception as e:
             logger.error(f"Vector query error: {e}")
             return []
+
+    def upsert_chunked(
+        self,
+        collection_name: str,
+        content: str,
+        base_id: str,
+        metadata: Optional[dict] = None,
+        chunk_delimiter: str = "## ",
+    ) -> int:
+        """Split content by Markdown section headers and upsert each chunk."""
+        # Split by ## headers, keeping the header with the chunk
+        raw_chunks = re.split(r"(?=^## )", content, flags=re.MULTILINE)
+        chunks = [c.strip() for c in raw_chunks if c.strip() and len(c.strip()) > 20]
+        if not chunks:
+            # Fall back to treating the whole content as one chunk
+            chunks = [content.strip()]
+
+        ids = [f"{base_id}_chunk_{i}" for i in range(len(chunks))]
+        metadatas = [{**(metadata or {}), "chunk_index": i} for i in range(len(chunks))]
+        self.upsert(collection_name, documents=chunks, ids=ids, metadatas=metadatas)
+        return len(chunks)
+
+    def delete_by_prefix(self, collection_name: str, id_prefix: str) -> None:
+        """Delete all documents whose ID starts with the given prefix."""
+        try:
+            collection = self.get_or_create_collection(collection_name)
+            # ChromaDB doesn't support prefix queries natively, so we get all and filter
+            all_ids = collection.get()["ids"]
+            matching = [doc_id for doc_id in all_ids if doc_id.startswith(id_prefix)]
+            if matching:
+                collection.delete(ids=matching)
+        except Exception as e:
+            logger.warning(f"Vector delete_by_prefix error in {collection_name}: {e}")
 
     def delete(self, collection_name: str, ids: list[str]):
         """Delete specific documents by ID from a collection."""

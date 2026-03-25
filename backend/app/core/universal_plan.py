@@ -413,7 +413,16 @@ class UniversalPlanSession:
         self.state = PlanState.AWAITING_CONFIRMATION
         self._set_draft(validated)
         if validated.execution_eligibility != PlanExecutionEligibility.ELIGIBLE:
-            raise PlanClarificationRequiredError("Plan requires clarification before execution", draft=validated)
+            blocking = [i for i in validated.validation_issues if i.severity == "blocking"]
+            if blocking:
+                details = "; ".join(i.message for i in blocking[:3])
+                raise PlanClarificationRequiredError(
+                    f"Le plan nécessite des clarifications avant d'être lancé : {details}",
+                    draft=validated,
+                )
+            raise PlanClarificationRequiredError(
+                "Le plan nécessite des clarifications avant d'être lancé.", draft=validated
+            )
 
 
 def _match_by_name(items: list[Any], name: str) -> Any | None:
@@ -727,7 +736,16 @@ class TaskPlanExecutor:
         orchestrator = get_orchestrator()
         validated_draft = validate_task_draft(draft)
         if validated_draft.execution_eligibility != PlanExecutionEligibility.ELIGIBLE:
-            raise PlanClarificationRequiredError("Task plan requires clarification before execution", draft=validated_draft)
+            blocking = [i for i in validated_draft.validation_issues if i.severity == "blocking"]
+            if blocking:
+                details = "; ".join(i.message for i in blocking[:3])
+                raise PlanClarificationRequiredError(
+                    f"Le plan de tâche nécessite des clarifications : {details}",
+                    draft=validated_draft,
+                )
+            raise PlanClarificationRequiredError(
+                "Le plan de tâche nécessite des clarifications avant d'être lancé.", draft=validated_draft
+            )
         task = orchestrator.create_task(
             title=validated_draft.task_title,
             description=validated_draft.task_description,
@@ -748,7 +766,16 @@ class TeamPlanExecutor:
         ctx_store = get_project_context_store()
         validated_draft = validate_team_draft(draft)
         if validated_draft.execution_eligibility != PlanExecutionEligibility.ELIGIBLE:
-            raise PlanClarificationRequiredError("Team plan requires clarification before execution", draft=validated_draft)
+            blocking = [i for i in validated_draft.validation_issues if i.severity == "blocking"]
+            if blocking:
+                details = "; ".join(i.message for i in blocking[:3])
+                raise PlanClarificationRequiredError(
+                    f"Le plan d'équipe nécessite des clarifications : {details}",
+                    draft=validated_draft,
+                )
+            raise PlanClarificationRequiredError(
+                "Le plan d'équipe nécessite des clarifications avant d'être lancé.", draft=validated_draft
+            )
 
         current_context = ctx_store.load_context() or {}
         ctx_store.publish_context(

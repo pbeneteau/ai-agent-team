@@ -5,16 +5,30 @@ from pydantic import BaseModel, Field
 
 
 class TaskStatus(str, Enum):
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
+    DRAFTING = "drafting"
+    IN_REVIEW = "in_review"
+    APPROVED = "approved"
+    CANCELLED = "cancelled"
 
 
 class TaskPriority(str, Enum):
+    NONE = "none"
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
+    URGENT = "urgent"
+
+
+class CreatorType(str, Enum):
+    HUMAN_FORM = "human_form"
+    HUMAN_CHAT = "human_chat"
+    SYSTEM = "system"
+
+
+class AssignmentStrategy(str, Enum):
+    SPECIFIC = "specific"
+    TEAM_AUTO = "team_auto"
+    ROLE_BASED = "role_based"
 
 
 class TaskExecutionMode(str, Enum):
@@ -36,6 +50,7 @@ class TaskPlanStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    PARTIAL = "partial"
 
 
 class TaskNodeStatus(str, Enum):
@@ -85,6 +100,18 @@ class TaskExecutionNode(BaseModel):
     sources: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    quality_score: Optional[int] = None
+    quality_flags: list[str] = Field(default_factory=list)
+    # Debug context captured at execution time
+    debug_system_prompt: Optional[str] = None
+    debug_user_message: Optional[str] = None
+    debug_tools: list[str] = Field(default_factory=list)
+    debug_input_tokens: Optional[int] = None
+    debug_output_tokens: Optional[int] = None
+    debug_model: Optional[str] = None
+    # Rerun support
+    rerun_count: int = 0
+    additional_instructions: Optional[str] = None
 
 
 class TaskExecutionPlan(BaseModel):
@@ -144,6 +171,37 @@ class TaskResponse(BaseModel):
     sources: list[str] = Field(default_factory=list)        # Cited URLs and publications from the result
     assumptions: list[str] = Field(default_factory=list)    # Assumptions / TBDs flagged by the agents
     warnings: list[str] = Field(default_factory=list)       # Unverified claims or missing evidence flagged by agents
+
+    # Identity
+    identifier: str = ""                              # Human-readable key, e.g. "TASK-42"
+
+    # Workflow
+    sort_order: float = 0.0                           # Manual ordering within status column
+    status_changed_at: Optional[str] = None           # ISO timestamp of last status change
+
+    # Organization
+    project_id: Optional[str] = None
+    labels: list[str] = Field(default_factory=list)   # Label IDs
+    creator_type: CreatorType = CreatorType.HUMAN_FORM
+    creator_id: Optional[str] = None
+
+    # Assignment
+    assignment_strategy: AssignmentStrategy = AssignmentStrategy.TEAM_AUTO
+
+    # Execution
+    current_iteration: int = 0                        # 0 = never executed, 1+ = iteration count
+
+    # Cost tracking
+    estimated_input_tokens: Optional[int] = None
+    estimated_output_tokens: Optional[int] = None
+    estimated_cost_usd: Optional[float] = None
+    actual_input_tokens: int = 0
+    actual_output_tokens: int = 0
+    actual_cost_usd: float = 0.0
+
+    # Lifecycle
+    archived_at: Optional[str] = None
+    cancelled_at: Optional[str] = None
 
 
 class TaskUpdate(BaseModel):

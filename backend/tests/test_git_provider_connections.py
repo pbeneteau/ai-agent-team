@@ -252,10 +252,10 @@ def test_registry_builds_git_tools_and_records_usage(tmp_path, monkeypatch):
     ]
 
     outputs = {tool.name: tool for tool in tools}
-    assert "Repository available at" in outputs["repo_clone__acme_service_api"].func()
-    assert "backend/fix-issue" in outputs["repo_branch__acme_service_api"].func("backend/fix-issue")
-    assert "Pushed branch" in outputs["repo_commit_push__acme_service_api"].func("Ship fix", "backend/fix-issue")
-    assert "Created review request" in outputs["repo_open_pr__acme_service_api"].func("Fix issue", "backend/fix-issue")
+    assert "Repository available at" in outputs["repo_clone__acme_service_api"].executor()
+    assert "backend/fix-issue" in outputs["repo_branch__acme_service_api"].executor("backend/fix-issue")
+    assert "Pushed branch" in outputs["repo_commit_push__acme_service_api"].executor("Ship fix", "backend/fix-issue")
+    assert "Created review request" in outputs["repo_open_pr__acme_service_api"].executor("Fix issue", "backend/fix-issue")
 
     from app.core.git_provider_store import get_git_provider_store
 

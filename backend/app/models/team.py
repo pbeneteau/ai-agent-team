@@ -24,21 +24,3 @@ class TeamResponse(BaseModel):
     agents: list[AgentResponse] = []
 
 
-class OrganigrammeNode(BaseModel):
-    id: str
-    name: str
-    title: str
-    role: str
-    status: str
-    occupancy_status: str = "idle"
-    occupancy_reason: Optional[str] = None
-    current_task_id: Optional[str] = None
-    current_task_title: Optional[str] = None
-    current_node_id: Optional[str] = None
-    current_node_title: Optional[str] = None
-    busy_since: Optional[str] = None
-    parent_id: Optional[str] = None
-    children: list["OrganigrammeNode"] = []
-
-
-OrganigrammeNode.model_rebuild()

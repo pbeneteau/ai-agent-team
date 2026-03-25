@@ -54,7 +54,7 @@ from app.models.team_recommendations import (
     TeamChangeRecommendation,
     TeamRecommendation,
 )
-from app.models.team import TeamConfig, TeamResponse, OrganigrammeNode
+from app.models.team import TeamConfig, TeamResponse
 from app.memory.project_context import get_project_context_store
 
 router = APIRouter(prefix="/teams", tags=["teams"])
@@ -722,49 +722,6 @@ def list_teams():
         _build_team_response(team, factory.get_team_agents(team.id))
         for team in factory.list_teams()
     ]
-
-
-@router.get("/organigramme", response_model=list[OrganigrammeNode])
-def get_organigramme():
-    factory = get_agent_factory()
-    factory.get_or_create_associate()
-    agents = factory.list_agents()
-
-    nodes: dict[str, OrganigrammeNode] = {}
-    associate_id: str | None = None
-
-    for agent in agents:
-        nodes[agent.id] = OrganigrammeNode(
-            id=agent.id,
-            name=agent.name,
-            title=agent.title,
-            role=agent.role.value,
-            status=agent.status.value,
-            occupancy_status=agent.occupancy_status.value,
-            occupancy_reason=agent.occupancy_reason.value if agent.occupancy_reason else None,
-            current_task_id=agent.current_task_id,
-            current_task_title=agent.current_task_title,
-            current_node_id=agent.current_node_id,
-            current_node_title=agent.current_node_title,
-            busy_since=agent.busy_since,
-            parent_id=agent.parent_id,
-        )
-        if agent.role.value == "associate":
-            associate_id = agent.id
-
-    # Virtually attach orphan team_leads to the associate so the hierarchy is correct
-    for node in nodes.values():
-        if node.role == "team_lead" and not node.parent_id and associate_id:
-            node.parent_id = associate_id
-
-    roots = []
-    for node in nodes.values():
-        if node.parent_id and node.parent_id in nodes:
-            nodes[node.parent_id].children.append(node)
-        else:
-            roots.append(node)
-
-    return roots
 
 
 @router.get("/project-context", response_model=ProjectBriefStateResponse)

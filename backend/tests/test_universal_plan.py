@@ -370,7 +370,7 @@ def test_task_plan_executor_creates_pending_task_and_broadcasts(isolated_backend
     task = asyncio.run(TaskPlanExecutor().execute(draft, fake_broadcast))
 
     assert task.title == "Draft launch brief"
-    assert task.status == "pending"
+    assert task.status == "drafting"
     assert len(scheduled) == 1
     assert broadcasts[0]["type"] == "task_created"
 

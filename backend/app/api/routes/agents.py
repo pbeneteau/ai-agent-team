@@ -7,10 +7,10 @@ from app.core.git_provider_store import get_git_provider_store
 from app.core.mcp_connection_store import get_mcp_connection_store
 from app.core.agent_factory import get_agent_factory
 from app.core.knowledge import get_knowledge_audit_service
-from app.core.learning import run_agent_research, run_targeted_rebriefing
+from app.core.learning import run_agent_reflection, run_agent_research, run_targeted_rebriefing
 from app.core.workspace import get_workspace_manager
 from app.models.knowledge import AgentKnowledgeReadiness, GlobalKnowledgeReadiness
-from app.models.agent import AgentResponse, AgentModelUpdate, ModelTier
+from app.models.agent import AgentLearningProfile, AgentResponse, AgentModelUpdate, ModelTier
 from app.models.git_providers import (
     AgentGitBindingResolved,
     AgentGitBindingUpdateRequest,
@@ -491,3 +491,89 @@ def delete_agent(agent_id: str):
     factory.delete_agent(agent_id)
     get_knowledge_audit_service().invalidate_agent(agent_id)
     return {"ok": True}
+
+
+@router.get("/{agent_id}/learning-profile", response_model=AgentLearningProfile)
+def get_learning_profile(agent_id: str):
+    """Get the learning profile for an agent: task count, quality, learnings, progression."""
+    import json
+    import re
+
+    factory = get_agent_factory()
+    agent = factory.get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    wm = get_workspace_manager()
+    workspace = wm.get(agent.id, agent.name, agent.title)
+
+    # Read agent stats
+    completed_task_nodes = 0
+    last_reflection_at = None
+    stats_path = workspace.skills / "agent_stats.json"
+    if stats_path.exists():
+        try:
+            stats = json.loads(stats_path.read_text(encoding="utf-8"))
+            completed_task_nodes = stats.get("completed_task_nodes", 0)
+            last_reflection_at = stats.get("last_reflection_at")
+        except Exception:
+            pass
+
+    # Read last 5 learnings from work_learnings.md
+    last_5_learnings: list[str] = []
+    work_learnings = workspace.read_skill("work_learnings")
+    if work_learnings:
+        for line in work_learnings.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("-", "*", "•")) and len(stripped) > 12:
+                item = stripped.lstrip("-*• ").strip()
+                if item.lower().startswith(("insight:", "caution:")):
+                    item = item.split(":", 1)[1].strip()
+                last_5_learnings.append(item)
+                if len(last_5_learnings) >= 5:
+                    break
+
+    # Compute avg quality from episodes
+    avg_quality_score = None
+    episode_count = 0
+    episodes = workspace.read_skill("episodes")
+    if episodes:
+        quality_scores: list[int] = []
+        for match in re.finditer(r"\*\*Quality:\*\*\s*(\d+)/100", episodes):
+            quality_scores.append(int(match.group(1)))
+            episode_count += 1
+        if quality_scores:
+            avg_quality_score = round(sum(quality_scores) / len(quality_scores), 1)
+
+    # Readiness score (from cached audit if available)
+    readiness_score = None
+
+    # Progression level
+    if completed_task_nodes >= 8:
+        progression_level = "expert"
+    elif completed_task_nodes >= 3:
+        progression_level = "operationnel"
+    else:
+        progression_level = "apprenti"
+
+    return AgentLearningProfile(
+        agent_id=agent_id,
+        completed_task_nodes=completed_task_nodes,
+        avg_quality_score=avg_quality_score,
+        last_5_learnings=last_5_learnings,
+        readiness_score=readiness_score,
+        progression_level=progression_level,
+        last_reflection_at=last_reflection_at,
+        episode_count=episode_count,
+    )
+
+
+@router.post("/{agent_id}/reflect")
+async def trigger_reflection(agent_id: str, background_tasks: BackgroundTasks):
+    """Manually trigger a periodic reflection for an agent."""
+    agent = get_agent_factory().get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    manager = get_manager()
+    background_tasks.add_task(run_agent_reflection, agent, manager.broadcast)
+    return {"status": "reflection_started", "agent_id": agent_id}

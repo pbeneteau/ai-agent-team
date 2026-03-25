@@ -191,12 +191,12 @@ def test_standalone_execution_keeps_specialists_isolated(isolated_backend, monke
             ],
         }
 
-    def fake_kickoff(self):
-        return FakeCrewResult(self.tasks[0].description, prompt_tokens=11, completion_tokens=7)
+    async def fake_runner_run(self, *, system_prompt, user_message, tools, model, max_tokens, max_iter, on_text_chunk=None):
+        return (user_message, 11, 7)
 
     monkeypatch.setattr(orchestrator, "_plan_with_lead", fake_plan)
-    monkeypatch.setattr(orchestrator_module, "get_tools_for_agent", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(orchestrator_module.Crew, "kickoff", fake_kickoff)
+    monkeypatch.setattr(orchestrator_module, "get_tools_for_agent_native", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("app.agents.anthropic_runner.AnthropicAgentRunner.run", fake_runner_run)
     monkeypatch.setattr(orchestrator_module, "run_learn_from_work", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
 
     task = orchestrator.create_task(
@@ -215,7 +215,7 @@ def test_standalone_execution_keeps_specialists_isolated(isolated_backend, monke
         node for node in stored_task.execution_plan.nodes if node.node_type == TaskNodeType.LEAD_COMPILE
     )
 
-    assert stored_task.status == TaskStatus.COMPLETED
+    assert stored_task.status == TaskStatus.IN_REVIEW
     assert stored_task.execution_plan.mode == "standalone"
     assert all(
         "## Upstream results you are allowed to use" not in (node.result or "")
@@ -247,7 +247,7 @@ def test_sync_task_deliverables_preserves_agent_authored_files(isolated_backend)
         title="Authored deliverables",
         description="Verify task-authored files are preserved.",
     )
-    task.status = TaskStatus.COMPLETED
+    task.status = TaskStatus.APPROVED
     task.result = "Final result"
     task.execution_plan = TaskExecutionPlan(
         nodes=[
@@ -299,16 +299,17 @@ def test_delete_task_removes_persisted_state_and_deliverables(isolated_backend):
 
 def test_delete_task_rejects_running_task(isolated_backend):
     from app.core.orchestrator import Orchestrator
-    from app.models.task import TaskStatus
+    from app.models.task import TaskPlanStatus, TaskStatus
 
     orchestrator = Orchestrator()
     task = orchestrator.create_task(
         title="Running delete guard",
-        description="Deletion should be blocked while running.",
+        description="Deletion should be blocked while executing.",
     )
-    task.status = TaskStatus.RUNNING
+    task.status = TaskStatus.DRAFTING
+    task.execution_plan.status = TaskPlanStatus.RUNNING
 
-    with pytest.raises(ValueError, match="running"):
+    with pytest.raises(ValueError, match="drafted"):
         orchestrator.delete_task(task.id)
 
     assert orchestrator.get_task(task.id) is not None
@@ -335,12 +336,12 @@ def test_execute_task_persists_original_failure_details_and_traceback(isolated_b
             ],
         }
 
-    def failing_kickoff(self):
+    async def failing_runner_run(self, *, system_prompt, user_message, tools, model, max_tokens, max_iter, on_text_chunk=None):
         raise OSError(5, "Input/output error")
 
     monkeypatch.setattr(orchestrator, "_plan_with_lead", fake_plan)
-    monkeypatch.setattr(orchestrator_module, "get_tools_for_agent", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(orchestrator_module.Crew, "kickoff", failing_kickoff)
+    monkeypatch.setattr(orchestrator_module, "get_tools_for_agent_native", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("app.agents.anthropic_runner.AnthropicAgentRunner.run", failing_runner_run)
     monkeypatch.setattr(orchestrator_module, "run_learn_from_work", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
 
     task = orchestrator.create_task(
@@ -356,17 +357,17 @@ def test_execute_task_persists_original_failure_details_and_traceback(isolated_b
 
     failing_node = next(node for node in stored_task.execution_plan.nodes if node.title == "Failing scope")
 
-    assert stored_task.status == TaskStatus.FAILED
+    assert stored_task.status == TaskStatus.IN_REVIEW
     assert stored_task.execution_plan.status == TaskPlanStatus.FAILED
     assert stored_task.error_type == "OSError"
-    assert stored_task.failure_stage == "crew_kickoff"
+    assert stored_task.failure_stage == "agent_run"
     assert "[Errno 5] Input/output error" in (stored_task.error or "")
     assert "OSError" in (stored_task.error_traceback or "")
     assert "Input/output error" in (stored_task.error_traceback or "")
 
     assert failing_node.status == TaskNodeStatus.FAILED
     assert failing_node.error_type == "OSError"
-    assert failing_node.failure_stage == "crew_kickoff"
+    assert failing_node.failure_stage == "agent_run"
     assert "Input/output error" in (failing_node.error_traceback or "")
 
     deliverable_paths = [item.path for item in stored_task.deliverables]
@@ -378,7 +379,7 @@ def test_execute_task_persists_original_failure_details_and_traceback(isolated_b
 
     node_payload = orchestrator.read_task_deliverable(task.id, "system/nodes/01-failing-scope.md")
     assert "## Error Traceback" in node_payload["content"]
-    assert "crew_kickoff" in node_payload["content"]
+    assert "agent_run" in node_payload["content"]
 
 
 def test_task_deliverable_tools_accept_relative_paths(isolated_backend):
@@ -400,17 +401,14 @@ def test_task_deliverable_tools_accept_relative_paths(isolated_backend):
     list_tool = _build_task_deliverable_list_tool(root)
     read_tool = _build_task_deliverable_read_tool(root)
 
-    result = write_tool.func(
-        path="authored/test-output.md",
-        content="# Test\n\nHello",
-    )
+    result = write_tool.executor(path="authored/test-output.md", content="# Test\n\nHello")
     assert "Saved deliverable: authored/test-output.md" in result
     assert (root / "authored" / "test-output.md").read_text(encoding="utf-8") == "# Test\n\nHello"
 
-    listing = list_tool.func(sub_path="authored")
+    listing = list_tool.executor(sub_path="authored")
     assert "authored/test-output.md" in listing
 
-    content = read_tool.func(path="authored/test-output.md")
+    content = read_tool.executor(path="authored/test-output.md")
     assert content == "# Test\n\nHello"
 
 
@@ -427,7 +425,7 @@ def test_task_deliverable_read_tool_rejects_directory_paths(isolated_backend):
     (root / "authored").mkdir(parents=True, exist_ok=True)
     read_tool = _build_task_deliverable_read_tool(root)
 
-    result = read_tool.func(path="authored")
+    result = read_tool.executor(path="authored")
     assert "ERROR: not a file: authored" in result
 
 
@@ -469,17 +467,19 @@ def test_task_deliverable_write_tool_requires_content_argument(isolated_backend)
     )
 
     write_tool = _build_task_deliverable_write_tool(orchestrator._task_deliverables_root(task.id))
-    schema = write_tool.args_schema.model_json_schema()
+    schema = write_tool.input_schema
 
     assert set(schema.get("required", [])) == {"path", "content"}
 
-    with pytest.raises(TypeError):
-        write_tool.func(path="authored/empty.md")
+    # Missing required 'content' argument should raise TypeError
+    try:
+        result = write_tool.executor(path="authored/empty.md")
+        assert False, "Expected TypeError for missing content"
+    except TypeError:
+        pass
 
 
-def test_execute_task_surfaces_tool_validation_errors_readably(isolated_backend, monkeypatch):
-    from pydantic import ValidationError
-
+def test_execute_task_surfaces_runtime_errors_readably(isolated_backend, monkeypatch):
     from app.core import orchestrator as orchestrator_module
     from app.models.task import TaskExecutionMode, TaskStatus
 
@@ -489,33 +489,28 @@ def test_execute_task_surfaces_tool_validation_errors_readably(isolated_backend,
     async def fake_plan(*_args, **_kwargs):
         return {
             "mode": "standalone",
-            "planning_notes": "Single specialist with an invalid tool call.",
+            "planning_notes": "Single specialist with a runtime error.",
             "nodes": [
                 {
                     "agent_id": specialists[0].id,
                     "title": "Bad tool invocation",
-                    "brief": "Simulate a tool call that omits required content.",
+                    "brief": "Simulate a runtime error during agent execution.",
                     "depends_on": [],
                 }
             ],
         }
 
-    write_tool = orchestrator_module._build_task_deliverable_write_tool(isolated_backend / "task-deliverables")
-    with pytest.raises(ValidationError) as exc_info:
-        write_tool.args_schema.model_validate({"path": "authored/only-path.md"})
-    validation_error = exc_info.value
-
-    def failing_kickoff(self):
-        raise validation_error
+    async def failing_runner_run(self, *, system_prompt, user_message, tools, model, max_tokens, max_iter, on_text_chunk=None):
+        raise ValueError("missing required content argument")
 
     monkeypatch.setattr(orchestrator, "_plan_with_lead", fake_plan)
-    monkeypatch.setattr(orchestrator_module, "get_tools_for_agent", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(orchestrator_module.Crew, "kickoff", failing_kickoff)
+    monkeypatch.setattr(orchestrator_module, "get_tools_for_agent_native", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("app.agents.anthropic_runner.AnthropicAgentRunner.run", failing_runner_run)
     monkeypatch.setattr(orchestrator_module, "run_learn_from_work", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
 
     task = orchestrator.create_task(
-        title="Readable tool validation error",
-        description="Make sure tool validation failures are explicit.",
+        title="Readable runtime error",
+        description="Make sure runtime failures surface readable details.",
         team_id=team.id,
         execution_mode=TaskExecutionMode.AUTO,
     )
@@ -524,38 +519,37 @@ def test_execute_task_surfaces_tool_validation_errors_readably(isolated_backend,
     stored_task = orchestrator.get_task(task.id)
     assert stored_task is not None
 
-    assert stored_task.status == TaskStatus.FAILED
-    assert stored_task.error_type == "ValidationError"
-    assert stored_task.failure_stage == "crew_kickoff"
+    assert stored_task.status == TaskStatus.IN_REVIEW
+    assert stored_task.error_type == "ValueError"
+    assert stored_task.failure_stage == "agent_run"
     assert "content" in (stored_task.error or "").lower()
-    assert "validation error" in (stored_task.error or "").lower()
     assert "content" in (stored_task.error_traceback or "").lower()
 
 
 def test_workspace_file_tools_are_scoped_and_require_workspace_path(isolated_backend):
-    from app.tools.registry import get_tools_for_agent
+    from app.tools.registry import get_tools_for_agent_native
 
     workspace = isolated_backend / "workspaces" / "tool-scope"
     workspace.mkdir(parents=True, exist_ok=True)
 
-    write_tool, read_tool = get_tools_for_agent(
+    write_tool, read_tool = get_tools_for_agent_native(
         ["file_write", "file_read"],
         workspace_path=str(workspace),
     )
 
-    schema = write_tool.args_schema.model_json_schema()
+    schema = write_tool.input_schema
     assert set(schema.get("required", [])) == {"path", "content"}
 
-    result = write_tool.func(path="notes/todo.md", content="# TODO\n\nScoped write")
+    result = write_tool.executor(path="notes/todo.md", content="# TODO\n\nScoped write")
     assert "Saved workspace file: notes/todo.md" in result
     assert (workspace / "notes" / "todo.md").read_text(encoding="utf-8") == "# TODO\n\nScoped write"
-    assert read_tool.func(path="notes/todo.md") == "# TODO\n\nScoped write"
+    assert read_tool.executor(path="notes/todo.md") == "# TODO\n\nScoped write"
 
-    assert "Path traversal attempt blocked" in write_tool.func(path="../escape.md", content="blocked")
-    assert "Path traversal attempt blocked" in read_tool.func(path="../escape.md")
+    assert "Path traversal attempt blocked" in write_tool.executor(path="../escape.md", content="blocked")
+    assert "Path traversal attempt blocked" in read_tool.executor(path="../escape.md")
 
     with pytest.raises(ValueError, match="workspace_path"):
-        get_tools_for_agent(["file_write"], workspace_path=None)
+        get_tools_for_agent_native(["file_write"], workspace_path=None)
 
 
 def test_read_task_deliverable_uses_resolved_root_paths(isolated_backend):
@@ -594,7 +588,7 @@ def test_reconcile_interrupted_tasks_marks_running_task_failed(isolated_backend)
         title="Interrupted task",
         description="Should be recovered on restart.",
     )
-    task.status = TaskStatus.RUNNING
+    task.status = TaskStatus.DRAFTING
     task.execution_plan = TaskExecutionPlan(
         status=TaskPlanStatus.RUNNING,
         nodes=[
@@ -626,7 +620,7 @@ def test_reconcile_interrupted_tasks_marks_running_task_failed(isolated_backend)
 
     assert result["recovered_tasks"] == 1
     assert result["recovered_nodes"] == 2
-    assert stored_task.status == TaskStatus.FAILED
+    assert stored_task.status == TaskStatus.IN_REVIEW
     assert stored_task.execution_plan.status == TaskPlanStatus.FAILED
     assert stored_task.execution_plan.nodes[0].status == TaskNodeStatus.FAILED
     assert stored_task.execution_plan.nodes[1].status == TaskNodeStatus.SKIPPED
@@ -698,12 +692,12 @@ def test_dependency_graph_injects_only_declared_dependencies(isolated_backend, m
             ],
         }
 
-    def fake_kickoff(self):
-        return FakeCrewResult(self.tasks[0].description, prompt_tokens=5, completion_tokens=3)
+    async def fake_runner_run(self, *, system_prompt, user_message, tools, model, max_tokens, max_iter, on_text_chunk=None):
+        return (user_message, 5, 3)
 
     monkeypatch.setattr(orchestrator, "_plan_with_lead", fake_plan)
-    monkeypatch.setattr(orchestrator_module, "get_tools_for_agent", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(orchestrator_module.Crew, "kickoff", fake_kickoff)
+    monkeypatch.setattr(orchestrator_module, "get_tools_for_agent_native", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("app.agents.anthropic_runner.AnthropicAgentRunner.run", fake_runner_run)
     monkeypatch.setattr(orchestrator_module, "run_learn_from_work", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
 
     task = orchestrator.create_task(
@@ -717,47 +711,25 @@ def test_dependency_graph_injects_only_declared_dependencies(isolated_backend, m
     stored_task = orchestrator.get_task(task.id)
     nodes_by_title = {node.title: node for node in stored_task.execution_plan.nodes}
 
-    assert stored_task.status == TaskStatus.COMPLETED
+    assert stored_task.status == TaskStatus.IN_REVIEW
     assert stored_task.execution_plan.mode == "dependency_graph"
     assert "## Upstream results you are allowed to use" in (nodes_by_title["Scope B"].result or "")
     assert "Scope A" in (nodes_by_title["Scope B"].result or "")
     assert "## Upstream results you are allowed to use" not in (nodes_by_title["Scope C"].result or "")
 
 
-def test_run_agent_research_logs_crewai_usage(isolated_backend, monkeypatch):
-    import crewai
-
+def test_run_agent_research_logs_usage(isolated_backend, monkeypatch):
     from app.core.learning import run_agent_research
     from app.core.usage_tracker import get_usage_tracker
 
     factory, _, _, specialists = _create_ready_team()
     researcher = specialists[0]
 
-    class FakeAgent:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
+    async def fake_runner_run(self, *, system_prompt, user_message, tools, model, max_tokens, max_iter, on_text_chunk=None):
+        return ("research done", 13, 9)
 
-    class FakeTask:
-        def __init__(self, **kwargs):
-            self.description = kwargs["description"]
-            self.expected_output = kwargs["expected_output"]
-            self.agent = kwargs["agent"]
-
-    class FakeCrew:
-        def __init__(self, agents, tasks, verbose):
-            self.agents = agents
-            self.tasks = tasks
-            self.verbose = verbose
-            self.usage_metrics = None
-
-        def kickoff(self):
-            return FakeCrewResult("research done", prompt_tokens=13, completion_tokens=9)
-
-    monkeypatch.setattr(crewai, "Agent", FakeAgent)
-    monkeypatch.setattr(crewai, "Task", FakeTask)
-    monkeypatch.setattr(crewai, "Crew", FakeCrew)
-    monkeypatch.setattr("app.agents.base_agent.build_llm", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr("app.tools.registry.get_tools_for_agent", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("app.agents.anthropic_runner.AnthropicAgentRunner.run", fake_runner_run)
+    monkeypatch.setattr("app.tools.registry.get_tools_for_agent_native", lambda *_args, **_kwargs: [])
 
     ok = asyncio.run(run_agent_research(researcher.id, "competitive landscape"))
 
@@ -927,7 +899,8 @@ def test_compact_work_learnings_content_respects_size_budget(isolated_backend, m
     assert "## Reusable cautions" in content
 
 
-def test_agent_memory_pack_includes_work_learnings(isolated_backend):
+@pytest.mark.asyncio
+async def test_agent_memory_pack_includes_work_learnings(isolated_backend):
     from app.core.orchestrator import _build_agent_memory_pack
     from app.core.workspace import get_workspace_manager
     from app.memory.skills_store import get_skills_store
@@ -947,7 +920,7 @@ def test_agent_memory_pack_includes_work_learnings(isolated_backend):
         author="test",
     )
 
-    memory_pack = _build_agent_memory_pack(agent, get_skills_store())
+    memory_pack = await _build_agent_memory_pack(agent, get_skills_store())
 
     assert "## Your reusable work learnings" in memory_pack
     assert "Reuse benchmark-backed framing for investor updates." in memory_pack
@@ -974,15 +947,15 @@ def test_execute_task_remains_successful_when_learn_from_work_fails(isolated_bac
             ],
         }
 
-    def fake_kickoff(self):
-        return FakeCrewResult("## Sources\n- https://example.com", prompt_tokens=4, completion_tokens=2)
+    async def fake_runner_run(self, *, system_prompt, user_message, tools, model, max_tokens, max_iter, on_text_chunk=None):
+        return ("## Sources\n- https://example.com", 4, 2)
 
     async def failing_learn_from_work(*_args, **_kwargs):
         raise RuntimeError("learning failed")
 
     monkeypatch.setattr(orchestrator, "_plan_with_lead", fake_plan)
-    monkeypatch.setattr(orchestrator_module, "get_tools_for_agent", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(orchestrator_module.Crew, "kickoff", fake_kickoff)
+    monkeypatch.setattr(orchestrator_module, "get_tools_for_agent_native", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("app.agents.anthropic_runner.AnthropicAgentRunner.run", fake_runner_run)
     monkeypatch.setattr(orchestrator_module, "run_learn_from_work", failing_learn_from_work)
 
     task = orchestrator.create_task(
@@ -995,7 +968,7 @@ def test_execute_task_remains_successful_when_learn_from_work_fails(isolated_bac
     asyncio.run(orchestrator.execute_task(task.id))
     stored_task = orchestrator.get_task(task.id)
 
-    assert stored_task.status == TaskStatus.COMPLETED
+    assert stored_task.status == TaskStatus.IN_REVIEW
 
 
 def test_execute_task_broadcasts_agent_occupancy_transitions(isolated_backend, monkeypatch):
@@ -1021,8 +994,8 @@ def test_execute_task_broadcasts_agent_occupancy_transitions(isolated_backend, m
             ],
         }
 
-    def fake_kickoff(self):
-        return FakeCrewResult("result", prompt_tokens=3, completion_tokens=2)
+    async def fake_runner_run(self, *, system_prompt, user_message, tools, model, max_tokens, max_iter, on_text_chunk=None):
+        return ("result", 3, 2)
 
     events = []
 
@@ -1030,8 +1003,8 @@ def test_execute_task_broadcasts_agent_occupancy_transitions(isolated_backend, m
         events.append(event)
 
     monkeypatch.setattr(orchestrator, "_plan_with_lead", fake_plan)
-    monkeypatch.setattr(orchestrator_module, "get_tools_for_agent", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(orchestrator_module.Crew, "kickoff", fake_kickoff)
+    monkeypatch.setattr(orchestrator_module, "get_tools_for_agent_native", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("app.agents.anthropic_runner.AnthropicAgentRunner.run", fake_runner_run)
     monkeypatch.setattr(orchestrator_module, "run_learn_from_work", lambda *_args, **_kwargs: asyncio.sleep(0, result=False))
 
     task = orchestrator.create_task(
@@ -1137,3 +1110,276 @@ def test_create_task_pins_active_brief_revision(isolated_backend):
     assert state.published is not None
     assert task.brief_revision == state.published.revision
     assert task.brief_fingerprint == state.published.brief_fingerprint
+
+
+# ---------------------------------------------------------------------------
+# Phase 3a — Smart summarization
+# ---------------------------------------------------------------------------
+
+def test_smart_summarize_returns_text_intact_when_within_budget(isolated_backend, monkeypatch):
+    """Text shorter than budget is returned as-is without any API call."""
+    from app.core.orchestrator import _smart_summarize
+
+    short_text = "This is a short result." * 10  # well under any reasonable budget
+
+    call_count = []
+
+    class FakeClient:
+        class messages:
+            @staticmethod
+            async def create(**_kwargs):
+                call_count.append(1)
+                raise AssertionError("should not be called")
+
+    result = asyncio.run(_smart_summarize(
+        short_text,
+        budget=len(short_text) + 1,
+        target_chars=5000,
+        client=FakeClient(),
+        model="claude-sonnet-test",
+        context_label="test",
+    ))
+
+    assert result == short_text
+    assert len(call_count) == 0
+
+
+def test_smart_summarize_calls_claude_when_text_exceeds_budget(isolated_backend, monkeypatch):
+    """Text exceeding budget triggers a Claude summarization call."""
+    from app.core.orchestrator import _smart_summarize
+    from app.core.usage_tracker import get_usage_tracker
+
+    long_text = "Detailed specialist analysis. " * 300  # ~9000 chars
+
+    class FakeClient:
+        class messages:
+            @staticmethod
+            async def create(**_kwargs):
+                return type("Resp", (), {
+                    "usage": type("Usage", (), {"input_tokens": 20, "output_tokens": 10})(),
+                    "content": [type("Block", (), {"text": "Summarized result."})()],
+                })()
+
+    result = asyncio.run(_smart_summarize(
+        long_text,
+        budget=100,
+        target_chars=500,
+        client=FakeClient(),
+        model="claude-sonnet-test",
+        context_label="specialist-a",
+    ))
+
+    assert result == "Summarized result."
+    usage = get_usage_tracker().summary()
+    assert usage["total"]["calls"] == 1
+    assert usage["total"]["input_tokens"] == 20
+    assert usage["total"]["output_tokens"] == 10
+
+
+def test_smart_summarize_falls_back_to_truncation_on_api_error(isolated_backend):
+    """When Claude call fails, falls back to brute truncation without raising."""
+    from app.core.orchestrator import _smart_summarize
+
+    long_text = "X" * 5000
+
+    class FailingClient:
+        class messages:
+            @staticmethod
+            async def create(**_kwargs):
+                raise ConnectionError("API unavailable")
+
+    result = asyncio.run(_smart_summarize(
+        long_text,
+        budget=100,
+        target_chars=500,
+        client=FailingClient(),
+        model="claude-sonnet-test",
+    ))
+
+    # Fallback: brute truncation to budget (100 chars)
+    assert len(result) <= 100 + 1  # _truncate may add ellipsis
+
+
+def test_async_dependency_context_returns_empty_for_no_dependencies(isolated_backend):
+    """Node with no depends_on returns empty string."""
+    from app.core.orchestrator import _async_dependency_context
+    from app.models.task import TaskExecutionNode, TaskExecutionPlan, TaskNodeType
+
+    node = TaskExecutionNode(
+        id="node-1",
+        title="Solo node",
+        description="No dependencies",
+        node_type=TaskNodeType.SPECIALIST,
+        depends_on=[],
+    )
+    plan = TaskExecutionPlan(nodes=[node])
+
+    class FakeClient:
+        pass
+
+    result = asyncio.run(_async_dependency_context(plan, node, client=FakeClient(), model="m"))
+    assert result == ""
+
+
+def test_async_dependency_context_includes_short_results_verbatim(isolated_backend):
+    """Short dependency results (under threshold) are included without summarization."""
+    from app.config.token_budgets import ORCHESTRATOR_DEPENDENCY_SUMMARY_THRESHOLD
+    from app.core.orchestrator import _async_dependency_context
+    from app.models.task import TaskExecutionNode, TaskExecutionPlan, TaskNodeType
+
+    short_result = "Analyst finding: market is growing." * 5  # well under threshold
+
+    upstream = TaskExecutionNode(
+        id="node-a",
+        title="Market Analysis",
+        description="Analyse the market",
+        node_type=TaskNodeType.SPECIALIST,
+        assigned_agent_name="Alice",
+        result=short_result,
+    )
+    downstream = TaskExecutionNode(
+        id="node-b",
+        title="Strategy",
+        description="Build strategy based on market analysis",
+        node_type=TaskNodeType.SPECIALIST,
+        depends_on=["node-a"],
+    )
+    plan = TaskExecutionPlan(nodes=[upstream, downstream])
+
+    call_count = []
+
+    class FakeClient:
+        class messages:
+            @staticmethod
+            async def create(**_kwargs):
+                call_count.append(1)
+                raise AssertionError("should not call Claude for short results")
+
+    assert len(short_result) < ORCHESTRATOR_DEPENDENCY_SUMMARY_THRESHOLD
+
+    result = asyncio.run(_async_dependency_context(plan, downstream, client=FakeClient(), model="m"))
+
+    assert "## Upstream results you are allowed to use" in result
+    assert "Market Analysis" in result
+    assert short_result in result
+    assert len(call_count) == 0
+
+
+def test_async_dependency_context_summarizes_long_results(isolated_backend):
+    """Long dependency results (over threshold) are summarized via Claude."""
+    from app.config.token_budgets import ORCHESTRATOR_DEPENDENCY_SUMMARY_THRESHOLD
+    from app.core.orchestrator import _async_dependency_context
+    from app.models.task import TaskExecutionNode, TaskExecutionPlan, TaskNodeType
+
+    long_result = "Deep specialist analysis with lots of detail. " * 200  # ~9000 chars
+
+    assert len(long_result) > ORCHESTRATOR_DEPENDENCY_SUMMARY_THRESHOLD
+
+    upstream = TaskExecutionNode(
+        id="node-x",
+        title="Research",
+        description="Research the topic",
+        node_type=TaskNodeType.SPECIALIST,
+        assigned_agent_name="Bob",
+        result=long_result,
+    )
+    downstream = TaskExecutionNode(
+        id="node-y",
+        title="Lead compile",
+        description="Compile all findings",
+        node_type=TaskNodeType.LEAD_COMPILE,
+        depends_on=["node-x"],
+    )
+    plan = TaskExecutionPlan(nodes=[upstream, downstream])
+
+    summarized_text = "Condensed: market growing fast. Sources: example.com"
+
+    class FakeClient:
+        class messages:
+            @staticmethod
+            async def create(**_kwargs):
+                return type("Resp", (), {
+                    "usage": type("Usage", (), {"input_tokens": 30, "output_tokens": 8})(),
+                    "content": [type("Block", (), {"text": summarized_text})()],
+                })()
+
+    result = asyncio.run(_async_dependency_context(plan, downstream, client=FakeClient(), model="m"))
+
+    assert "## Upstream results you are allowed to use" in result
+    assert "Research" in result
+    assert summarized_text in result
+    assert long_result not in result
+
+
+# ---------------------------------------------------------------------------
+# Quality Gate tests
+# ---------------------------------------------------------------------------
+
+from app.core.orchestrator import _compute_quality_gate
+
+
+def test_quality_gate_rich_result_with_sources():
+    """A solid result with URL sources should score >= 70 with no critical flags."""
+    text = "The market is growing at 15% CAGR. See https://example.com/report for details.\n" * 20
+    sources = ["https://example.com/report", "https://other.com/data"]
+    assumptions = []
+    warnings = []
+    score, flags = _compute_quality_gate(text, sources, assumptions, warnings)
+    assert score >= 70
+    assert "Aucune source vérifiable trouvée" not in flags
+    assert "Résultat vide ou insuffisant" not in flags
+    assert "Résultat trop court" not in flags
+
+
+def test_quality_gate_empty_result():
+    """An empty or near-empty result should score very low."""
+    text = "OK"
+    sources = []
+    assumptions = []
+    warnings = []
+    score, flags = _compute_quality_gate(text, sources, assumptions, warnings)
+    assert score <= 20
+    assert "Résultat vide ou insuffisant" in flags
+
+
+def test_quality_gate_short_no_source():
+    """Short result with no source should get both length and source penalties."""
+    text = "The market looks promising but no data available." * 2  # ~100 chars
+    sources = []
+    assumptions = []
+    warnings = []
+    score, flags = _compute_quality_gate(text, sources, assumptions, warnings)
+    assert "Aucune source vérifiable trouvée" in flags
+    assert "Résultat trop court" in flags
+    assert score < 50
+
+
+def test_quality_gate_tbd_and_warnings():
+    """TBDs in text and warnings should add penalties up to their caps."""
+    text = ("This is a detailed analysis. TBD on market size. TODO: verify. À confirmer later. " * 10)
+    sources = ["https://example.com"]
+    assumptions = ["Market size assumed at $1B"]
+    warnings = ["Growth rate unverified", "Competitor data missing"]
+    score, flags = _compute_quality_gate(text, sources, assumptions, warnings)
+    assert any("hypothèse" in f for f in flags)
+    assert any("non vérifiés" in f for f in flags)
+    assert any("TBD non résolus" in f for f in flags)
+    # Penalties are additive but capped
+    assert score < 70
+
+
+def test_quality_gate_score_always_clamped():
+    """Score should always be between 0 and 100 regardless of extreme inputs."""
+    # Worst case: empty text, no sources, many assumptions, warnings
+    text = ""
+    sources = []
+    assumptions = ["a"] * 20
+    warnings = ["w"] * 20
+    score_low, _ = _compute_quality_gate(text, sources, assumptions, warnings)
+    assert 0 <= score_low <= 100
+
+    # Best case: long text with many sources
+    text = "Detailed analysis. " * 500
+    sources = [f"https://source{i}.com" for i in range(10)]
+    score_high, _ = _compute_quality_gate(text, sources, [], [])
+    assert 0 <= score_high <= 100

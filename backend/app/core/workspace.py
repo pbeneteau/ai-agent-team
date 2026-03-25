@@ -141,7 +141,30 @@ class AgentWorkspace:
         )
         path.write_text(header + content, encoding="utf-8")
         logger.info(f"[{self.agent_id}] Skill '{safe_name}' written by {author}")
+
+        # Index large, task-dependent skills into ChromaDB for vector retrieval
+        if safe_name == "core_skills" or safe_name.startswith("research_"):
+            self._index_skill_to_vector(safe_name, content)
+
         return path
+
+    def _index_skill_to_vector(self, skill_name: str, content: str) -> None:
+        """Index a skill's content into ChromaDB for vector retrieval."""
+        try:
+            from app.memory.vector_store import get_vector_store
+            vs = get_vector_store()
+            collection_name = f"agent_skills_{self.agent_id}"
+            # Clear old chunks for this skill before re-indexing
+            vs.delete_by_prefix(collection_name, f"{skill_name}_chunk_")
+            count = vs.upsert_chunked(
+                collection_name,
+                content,
+                base_id=skill_name,
+                metadata={"skill_name": skill_name, "agent_id": self.agent_id},
+            )
+            logger.debug(f"[{self.agent_id}] Indexed {count} chunks for '{skill_name}' into ChromaDB")
+        except Exception as e:
+            logger.debug(f"[{self.agent_id}] Vector indexing failed for '{skill_name}': {e}")
 
     def read_skill(self, skill_name: str) -> Optional[str]:
         safe_name = skill_name.replace(" ", "_").replace("/", "_").lower()

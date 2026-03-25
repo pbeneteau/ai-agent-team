@@ -22,6 +22,12 @@ class PlanState(str, Enum):
     FAILED = "failed"
 
 
+class PlanReviewWorkflow(str, Enum):
+    PLAN = "plan"
+    ASK = "ask"
+    DESIGN_TEAM = "design-team"
+
+
 class PlanFieldType(str, Enum):
     TEXT = "text"
     TEXTAREA = "textarea"
@@ -143,3 +149,15 @@ class PlanSessionState(BaseModel):
     form: Optional[PlanForm] = None
     draft: Optional[PlanDraft] = None
     last_error: Optional[str] = None
+
+
+class PlanReviewSnapshot(BaseModel):
+    id: str
+    session_id: str
+    workflow: PlanReviewWorkflow = PlanReviewWorkflow.PLAN
+    kind: PlanKind
+    state: PlanState
+    draft: PlanDraft
+    updated_at: str
+    error: Optional[str] = None
+    session: PlanSessionState

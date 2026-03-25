@@ -13,6 +13,8 @@ from pydantic import BaseModel, Field
 
 from app.config import get_settings, has_web_search
 from app.config.prompts import (
+    AGENT_REFLECTION_PROMPT,
+    CONSOLIDATE_CORE_SKILLS_PROMPT,
     DOCUMENT_REBRIEFING_PROMPT,
     LEARNING_SYSTEM_PROMPT,
     LEARN_FROM_WORK_PROMPT,
@@ -21,7 +23,12 @@ from app.config.prompts import (
     TARGETED_REBRIEFING_PROMPT,
 )
 from app.config.token_budgets import (
+    CORE_SKILLS_CONSOLIDATION_MAX_TOKENS,
+    CORE_SKILLS_CONSOLIDATION_THRESHOLD,
+    EPISODES_MAX_ENTRIES,
     PROJECT_CONTEXT_BRIEFING_MAX_TOKENS,
+    REFLECTION_MAX_TOKENS,
+    REFLECTION_TRIGGER_THRESHOLD,
     WORK_LEARNINGS_EXISTING_BUDGET,
     WORK_LEARNINGS_RESULT_BUDGET,
 )
@@ -209,6 +216,328 @@ def _compact_work_learnings_content(insights: list[str], cautions: list[str], wo
     return content
 
 
+_SEMANTIC_DEDUP_DISTANCE_THRESHOLD = 0.30  # L2 distance — ~cosine sim > 0.85
+
+
+def _is_semantically_duplicate(text: str, collection_name: str) -> bool:
+    """Check if text is semantically similar to any existing entry via ChromaDB."""
+    try:
+        from app.memory.vector_store import get_vector_store
+        vs = get_vector_store()
+        results = vs.query(collection_name, [text], n_results=1)
+        if not results:
+            return False
+        return results[0].get("distance", 999) < _SEMANTIC_DEDUP_DISTANCE_THRESHOLD
+    except Exception:
+        return False
+
+
+def _check_and_migrate_team_learnings(
+    agent: AgentConfig,
+    new_insights: list[str],
+    new_cautions: list[str],
+) -> None:
+    """Check new learnings against other agents in the same team. Migrate duplicates to shared team knowledge."""
+    if not agent.team_id:
+        return
+
+    factory = get_agent_factory()
+    team_agents = factory.get_team_agents(agent.team_id)
+    if len(team_agents) < 2:
+        return
+
+    # Collect normalized learnings from all other agents in the team
+    other_normalized: set[str] = set()
+    for other in team_agents:
+        if other.id == agent.id:
+            continue
+        other_ws = get_workspace_manager().get(other.id, other.name, other.title)
+        other_content = other_ws.read_skill(WORK_LEARNINGS_SKILL) or ""
+        other_insights, other_cautions = _parse_work_learnings(other_content)
+        for item in other_insights + other_cautions:
+            other_normalized.add(_normalize_work_learning_item(item))
+
+    # Index other agents' learnings in ChromaDB for semantic matching
+    collection_name = f"team_learnings_{agent.team_id}"
+    other_raw_items: list[str] = []
+    for other in team_agents:
+        if other.id == agent.id:
+            continue
+        other_ws = get_workspace_manager().get(other.id, other.name, other.title)
+        other_content = other_ws.read_skill(WORK_LEARNINGS_SKILL) or ""
+        other_ins, other_cau = _parse_work_learnings(other_content)
+        other_raw_items.extend(other_ins + other_cau)
+    if other_raw_items:
+        try:
+            from app.memory.vector_store import get_vector_store
+            vs = get_vector_store()
+            ids = [f"tl_{hash(i) & 0xFFFFFFFF:08x}" for i in other_raw_items]
+            vs.upsert(collection_name, documents=other_raw_items, ids=ids)
+        except Exception:
+            pass
+
+    # Find matches
+    shared_insights: list[str] = []
+    shared_cautions: list[str] = []
+    for item in new_insights:
+        if _normalize_work_learning_item(item) in other_normalized:
+            shared_insights.append(item)
+    for item in new_cautions:
+        if _normalize_work_learning_item(item) in other_normalized:
+            shared_cautions.append(item)
+
+    # Semantic dedup pass — catch paraphrases missed by exact normalization
+    for item in new_insights:
+        if _normalize_work_learning_item(item) not in other_normalized:
+            if _is_semantically_duplicate(item, collection_name):
+                shared_insights.append(item)
+    for item in new_cautions:
+        if _normalize_work_learning_item(item) not in other_normalized:
+            if _is_semantically_duplicate(item, collection_name):
+                shared_cautions.append(item)
+
+    if not shared_insights and not shared_cautions:
+        return
+
+    # Write to team knowledge file
+    shared_ws = get_workspace_manager().shared
+    skill_name = f"team_knowledge_{agent.team_id}"
+    existing = shared_ws.read_skill(skill_name) or ""
+    existing_normalized: set[str] = set()
+    for line in existing.splitlines():
+        stripped = line.strip().lstrip("-*• ").strip()
+        if stripped:
+            existing_normalized.add(_normalize_work_learning_item(stripped))
+
+    date_tag = datetime.now(UTC).strftime("%Y-%m-%d")
+    new_lines: list[str] = []
+    for item in shared_insights:
+        if _normalize_work_learning_item(item) not in existing_normalized:
+            new_lines.append(f"- {item} ({date_tag})")
+            existing_normalized.add(_normalize_work_learning_item(item))
+    for item in shared_cautions:
+        if _normalize_work_learning_item(item) not in existing_normalized:
+            new_lines.append(f"- Caution: {item} ({date_tag})")
+            existing_normalized.add(_normalize_work_learning_item(item))
+
+    if not new_lines:
+        return
+
+    if existing and _strip_skill_header(existing).strip():
+        content = _strip_skill_header(existing).rstrip() + "\n" + "\n".join(new_lines) + "\n"
+    else:
+        content = (
+            "# Team Knowledge\n\n"
+            "Shared learnings validated by multiple team members.\n\n"
+            + "\n".join(new_lines) + "\n"
+        )
+
+    # Consolidate if team knowledge exceeds 2000 chars
+    if len(content) > 2000:
+        consolidated = consolidate_skill_content(skill_name, content, str(shared_ws.root))
+        if consolidated:
+            content = consolidated
+
+    shared_ws.write_skill(skill_name, content, author=f"team_dedup:{agent.id}")
+    logger.info("Team knowledge updated for team %s: +%d shared items", agent.team_id, len(new_lines))
+
+    # Index new team knowledge items in ChromaDB
+    try:
+        from app.memory.vector_store import get_vector_store
+        vs = get_vector_store()
+        raw_items = [l.lstrip("- ").rstrip(f" ({date_tag})") for l in new_lines]
+        ids = [f"tl_{hash(i) & 0xFFFFFFFF:08x}" for i in raw_items]
+        vs.upsert(collection_name, documents=raw_items, ids=ids)
+    except Exception:
+        pass
+
+
+def _read_agent_stats(workspace) -> dict:
+    """Read agent_stats.json from the workspace skills directory."""
+    try:
+        raw = workspace.read_skill("agent_stats")
+        if raw:
+            content = _strip_skill_header(raw).strip()
+            return json.loads(content)
+    except Exception:
+        pass
+    return {}
+
+
+def _write_agent_stats(workspace, stats: dict) -> None:
+    """Write agent_stats.json to the workspace skills directory."""
+    path = workspace.skills / "agent_stats.json"
+    path.write_text(json.dumps(stats, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+async def consolidate_core_skills(agent: AgentConfig) -> bool:
+    """Merge durable work_learnings into core_skills via a single Claude call."""
+    settings = get_settings()
+    if not settings.anthropic_api_key:
+        return False
+
+    workspace = get_workspace_manager().get(agent.id, agent.name, agent.title)
+    core_skills = workspace.read_skill("core_skills")
+    work_learnings = workspace.read_skill("work_learnings")
+    if not core_skills or not work_learnings:
+        return False
+
+    prompt = CONSOLIDATE_CORE_SKILLS_PROMPT.format(
+        agent_name=agent.name,
+        agent_title=agent.title,
+        agent_specialization=agent.specialization,
+        core_skills=_strip_skill_header(core_skills),
+        work_learnings=_strip_skill_header(work_learnings),
+    )
+
+    try:
+        client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        response = await client.messages.create(
+            model=settings.claude_model,
+            max_tokens=CORE_SKILLS_CONSOLIDATION_MAX_TOKENS,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        get_usage_tracker().log(settings.claude_model, response.usage.input_tokens, response.usage.output_tokens)
+        result = response.content[0].text.strip()
+        if not result or len(result) < 100:
+            return False
+        workspace.write_skill("core_skills", result, author="consolidation")
+        get_knowledge_audit_service().invalidate_agent(agent.id)
+        logger.info("Core skills consolidated for %s (threshold=%d)", agent.name, CORE_SKILLS_CONSOLIDATION_THRESHOLD)
+        return True
+    except Exception as exc:
+        logger.warning("Core skills consolidation failed for %s: %s", agent.name, exc)
+        return False
+
+
+def write_episode(
+    agent: AgentConfig,
+    task: TaskResponse,
+    nodes: list[TaskExecutionNode],
+) -> None:
+    """Write a structured episode entry to the agent's episodes.md after task completion."""
+    workspace = get_workspace_manager().get(agent.id, agent.name, agent.title)
+
+    # Compute aggregate stats
+    quality_scores = [n.quality_score for n in nodes if n.quality_score is not None]
+    avg_quality = round(sum(quality_scores) / len(quality_scores)) if quality_scores else None
+    warnings_list = []
+    for n in nodes:
+        warnings_list.extend(n.warnings[:2])
+
+    # Compute duration from earliest start to latest completion
+    started_times = [n.started_at for n in nodes if n.started_at]
+    completed_times = [n.completed_at for n in nodes if n.completed_at]
+    duration = ""
+    if started_times and completed_times:
+        try:
+            start = min(datetime.fromisoformat(t) for t in started_times)
+            end = max(datetime.fromisoformat(t) for t in completed_times)
+            delta = end - start
+            total_secs = int(delta.total_seconds())
+            if total_secs >= 3600:
+                duration = f"{total_secs // 3600}h {(total_secs % 3600) // 60}m"
+            elif total_secs >= 60:
+                duration = f"{total_secs // 60}m {total_secs % 60}s"
+            else:
+                duration = f"{total_secs}s"
+        except Exception:
+            pass
+
+    quality_str = f"{avg_quality}/100" if avg_quality is not None else "N/A"
+    result_summary = (task.result or "N/A")[:300].replace("\n", " ")
+    issues_str = "; ".join(warnings_list[:4]) if warnings_list else "None"
+
+    entry = (
+        f"### {task.title}\n"
+        f"- **Date:** {task.updated_at[:10] if task.updated_at else 'unknown'}\n"
+        f"- **Quality:** {quality_str}\n"
+        f"- **Duration:** {duration or 'N/A'}\n"
+        f"- **Result summary:** {result_summary}\n"
+        f"- **Issues:** {issues_str}\n"
+        f"- **Status:** {task.status.value}\n"
+    )
+
+    # Read existing episodes and prepend (most recent first)
+    existing = workspace.read_skill("episodes") or ""
+    existing_body = _strip_skill_header(existing).strip()
+
+    # Parse existing entries and trim to max
+    if existing_body:
+        # Split by ### headers
+        entries = [e.strip() for e in re.split(r"(?=^### )", existing_body, flags=re.MULTILINE) if e.strip()]
+        entries = entries[:EPISODES_MAX_ENTRIES - 1]  # leave room for new entry
+        content = "# Task History\n\n" + entry + "\n" + "\n".join(entries) + "\n"
+    else:
+        content = "# Task History\n\n" + entry
+
+    workspace.write_skill("episodes", content, author="episode_writer")
+    logger.info("Episode written for %s: %s", agent.name, task.title)
+
+
+async def run_agent_reflection(agent: AgentConfig, broadcast_callback=None) -> bool:
+    """Periodic self-reflection: agent rereads all memory and updates core_skills with durable patterns."""
+    settings = get_settings()
+    if not settings.anthropic_api_key:
+        return False
+
+    workspace = get_workspace_manager().get(agent.id, agent.name, agent.title)
+    core_skills = workspace.read_skill("core_skills") or ""
+    work_learnings = workspace.read_skill("work_learnings") or ""
+    episodes = workspace.read_skill("episodes") or ""
+
+    # Read team knowledge if available
+    team_knowledge = ""
+    if agent.team_id:
+        shared_ws = get_workspace_manager().shared
+        team_knowledge = shared_ws.read_skill(f"team_knowledge_{agent.team_id}") or ""
+
+    if not core_skills and not work_learnings:
+        return False
+
+    prompt = AGENT_REFLECTION_PROMPT.format(
+        agent_name=agent.name,
+        agent_title=agent.title,
+        agent_specialization=agent.specialization,
+        core_skills=_strip_skill_header(core_skills),
+        work_learnings=_strip_skill_header(work_learnings) or "None yet.",
+        episodes=_strip_skill_header(episodes) or "No episodes yet.",
+        team_knowledge=_strip_skill_header(team_knowledge) or "None.",
+    )
+
+    try:
+        client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        response = await client.messages.create(
+            model=settings.claude_model,
+            max_tokens=REFLECTION_MAX_TOKENS,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        get_usage_tracker().log(settings.claude_model, response.usage.input_tokens, response.usage.output_tokens)
+        result = response.content[0].text.strip()
+        if not result or len(result) < 100:
+            return False
+
+        workspace.write_skill("core_skills", result, author="reflection")
+        get_knowledge_audit_service().invalidate_agent(agent.id)
+
+        # Update stats
+        stats = _read_agent_stats(workspace)
+        stats["last_reflection_at"] = _now_iso()
+        _write_agent_stats(workspace, stats)
+
+        logger.info("Reflection complete for %s — core_skills updated", agent.name)
+
+        if broadcast_callback:
+            await broadcast_callback({
+                "type": "reflection_complete",
+                "data": {"agent_id": agent.id, "agent_name": agent.name},
+            })
+        return True
+    except Exception as exc:
+        logger.warning("Reflection failed for %s: %s", agent.name, exc)
+        return False
+
+
 async def run_learn_from_work(
     agent: AgentConfig,
     task: TaskResponse,
@@ -238,6 +567,8 @@ async def run_learn_from_work(
         assumptions="\n".join(f"- {assumption}" for assumption in node.assumptions[:6]) or "- None",
         warnings="\n".join(f"- {warning}" for warning in node.warnings[:6]) or "- None",
         existing_work_learnings=_strip_skill_header(existing_content)[:WORK_LEARNINGS_EXISTING_BUDGET] or "None yet.",
+        node_status=node.status.value,
+        quality_score=node.quality_score if node.quality_score is not None else "N/A",
     )
 
     try:
@@ -289,12 +620,32 @@ async def run_learn_from_work(
     final_content = _compact_work_learnings_content(merged_insights, merged_cautions, str(workspace.root))
     workspace.write_skill(WORK_LEARNINGS_SKILL, final_content, author=f"learn_from_work:{node.id}")
     get_knowledge_audit_service().invalidate_agent(agent.id)
+
+    # Check for cross-agent duplicate learnings and migrate to team knowledge
+    try:
+        _check_and_migrate_team_learnings(agent, new_insights, new_cautions)
+    except Exception as exc:
+        logger.debug("Team knowledge migration failed for %s: %s", agent.name, exc)
+
     logger.info(
         "Work learnings updated for %s: +%s insight(s), +%s caution(s)",
         agent.name,
         len(new_insights),
         len(new_cautions),
     )
+
+    # Track completed task nodes and trigger core_skills consolidation periodically
+    stats = _read_agent_stats(workspace)
+    stats["completed_task_nodes"] = stats.get("completed_task_nodes", 0) + 1
+    _write_agent_stats(workspace, stats)
+    if stats["completed_task_nodes"] % CORE_SKILLS_CONSOLIDATION_THRESHOLD == 0:
+        logger.info("Triggering core_skills consolidation for %s (node count=%d)", agent.name, stats["completed_task_nodes"])
+        await consolidate_core_skills(agent)
+
+    if stats["completed_task_nodes"] % REFLECTION_TRIGGER_THRESHOLD == 0:
+        logger.info("Triggering periodic reflection for %s (node count=%d)", agent.name, stats["completed_task_nodes"])
+        await run_agent_reflection(agent)
+
     return True
 
 
@@ -710,13 +1061,11 @@ async def run_document_rebriefing(doc_id: str, broadcast_callback=None):
 
 async def run_agent_research(agent_id: str, topic: str, broadcast_callback=None) -> bool:
     """
-    Run an autonomous web research session for an agent using CrewAI + web_search.
+    Run an autonomous web research session for an agent using the native Anthropic runner.
     The agent searches, synthesises, and saves findings to skills/research_{slug}.md.
-    Requires SERPER_API_KEY to be set in settings.
     """
     import re
     import os
-    from concurrent.futures import ThreadPoolExecutor
 
     settings = get_settings()
     factory = get_agent_factory()
@@ -752,12 +1101,13 @@ async def run_agent_research(agent_id: str, topic: str, broadcast_callback=None)
     await _broadcast_agent_status(agent_id, broadcast_callback)
 
     try:
-        from crewai import Agent as CrAgent, Crew, Task as CrTask
-        from app.agents.base_agent import build_llm
-        from app.tools.registry import get_tools_for_agent
+        from anthropic import AsyncAnthropic
+        from app.agents.anthropic_runner import AnthropicAgentRunner
+        from app.agents.base_agent import build_agent_model_name
+        from app.tools.registry import get_tools_for_agent_native
         from app.models.agent import ModelTier
 
-        tools = get_tools_for_agent(
+        native_tools = get_tools_for_agent_native(
             agent_cfg.tools,
             agent_cfg.workspace_path,
             git_bindings=agent_cfg.git_bindings,
@@ -765,71 +1115,52 @@ async def run_agent_research(agent_id: str, topic: str, broadcast_callback=None)
             allow_git_write=False,
         )
 
-        llm = build_llm(agent_cfg.model_tier, agent_cfg.max_tokens)
-        backstory = (
+        research_model = build_agent_model_name(agent_cfg)
+        system_prompt = (
             f"{agent_cfg.backstory}\n\n"
             f"## Project context\n{current_project_ctx[:1500]}\n\n"
             f"## Project overview\n{project_summary}"
         )
+        user_message = (
+            f"Research the following topic thoroughly: **{topic}**\n\n"
+            f"As {agent_cfg.name} ({agent_cfg.title}), focus on what is most relevant to your role "
+            f"and to the project context above.\n\n"
+            f"Instructions:\n"
+            f"1. Perform 3–5 targeted web searches on different angles of the topic\n"
+            f"2. Browse 2–3 of the most promising result pages for deeper content\n"
+            f"3. Synthesise your findings into a structured Markdown document\n"
+            f"4. Save it using skill_write with skill_name='{skill_name}'\n\n"
+            f"The document MUST be structured as follows:\n\n"
+            f"## Summary\n"
+            f"(2–3 sentence overview of what you found)\n\n"
+            f"## Key Findings\n"
+            f"For each finding, include:\n"
+            f"- **Claim**: what you found\n"
+            f"- **Source**: URL or publication name where you verified it\n"
+            f"- **Confidence**: High / Medium / Low\n"
+            f"- **Relevance**: why it matters for your role on this project\n\n"
+            f"## Data Points\n"
+            f"List only numbers and statistics found in actual sources, with explicit citations.\n"
+            f"Format: `[Stat] — Source: [URL or publication], [Year if known]`\n\n"
+            f"## Gaps and Open Questions\n"
+            f"What you could NOT find or confirm. Flag these explicitly.\n\n"
+            f"## Actionable Insights\n"
+            f"What this research means for your specific role and tasks.\n\n"
+            f"CRITICAL: Do NOT invent numbers. If you cannot find a verified source for a statistic, "
+            f"put it in Gaps. A gap acknowledged is far better than a fabricated figure."
+        )
 
-        crewai_agent = CrAgent(
-            role=agent_cfg.title,
-            goal=agent_cfg.goal,
-            backstory=backstory,
-            llm=llm,
-            tools=[t for t in tools if t is not None],
-            verbose=True,
+        client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        runner = AnthropicAgentRunner(client=client)
+        _result_text, inp_tokens, out_tokens = await runner.run(
+            system_prompt=system_prompt,
+            user_message=user_message,
+            tools=native_tools,
+            model=research_model,
+            max_tokens=agent_cfg.max_tokens,
             max_iter=10,
         )
-
-        task = CrTask(
-            description=(
-                f"Research the following topic thoroughly: **{topic}**\n\n"
-                f"As {agent_cfg.name} ({agent_cfg.title}), focus on what is most relevant to your role "
-                f"and to the project context above.\n\n"
-                f"Instructions:\n"
-                f"1. Perform 3–5 targeted web searches on different angles of the topic\n"
-                f"2. Browse 2–3 of the most promising result pages for deeper content\n"
-                f"3. Synthesise your findings into a structured Markdown document\n"
-                f"4. Save it using skill_write with skill_name='{skill_name}'\n\n"
-                f"The document MUST be structured as follows:\n\n"
-                f"## Summary\n"
-                f"(2–3 sentence overview of what you found)\n\n"
-                f"## Key Findings\n"
-                f"For each finding, include:\n"
-                f"- **Claim**: what you found\n"
-                f"- **Source**: URL or publication name where you verified it\n"
-                f"- **Confidence**: High / Medium / Low\n"
-                f"- **Relevance**: why it matters for your role on this project\n\n"
-                f"## Data Points\n"
-                f"List only numbers and statistics found in actual sources, with explicit citations.\n"
-                f"Format: `[Stat] — Source: [URL or publication], [Year if known]`\n\n"
-                f"## Gaps and Open Questions\n"
-                f"What you could NOT find or confirm. Flag these explicitly.\n\n"
-                f"## Actionable Insights\n"
-                f"What this research means for your specific role and tasks.\n\n"
-                f"CRITICAL: Do NOT invent numbers. If you cannot find a verified source for a statistic, "
-                f"put it in Gaps. A gap acknowledged is far better than a fabricated figure."
-            ),
-            expected_output=f"A saved skill file '{skill_name}.md' with sourced research findings.",
-            agent=crewai_agent,
-        )
-
-        crew = Crew(agents=[crewai_agent], tasks=[task], verbose=True)
-
-        loop = asyncio.get_event_loop()
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            result = await loop.run_in_executor(executor, crew.kickoff)
-
-        research_model = (
-            settings.claude_model_opus
-            if agent_cfg.model_tier == ModelTier.OPUS
-            else settings.claude_model_sonnet
-        )
-        get_usage_tracker().log_crewai_usage(
-            research_model,
-            getattr(result, "token_usage", None) or getattr(crew, "usage_metrics", None),
-        )
+        get_usage_tracker().log(research_model, inp_tokens, out_tokens)
 
         logger.info(f"Research complete for {agent_cfg.name}: topic='{topic}', skill='{skill_name}'")
         get_knowledge_audit_service().invalidate_agent(agent_id)
