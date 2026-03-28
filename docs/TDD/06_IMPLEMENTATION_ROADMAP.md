@@ -131,19 +131,19 @@ backend/
 
 **Create these files:**
 - `app/models/workspace.py` — `Workspace` model
-- `app/models/agent.py` — Rewrite `Agent` model with all V2 columns (readiness_score, progression_level, model_tier, tools JSONB, completed_artifacts, avg_quality_score, last_reflection_at, archived_at)
+- `app/models/agent.py` — `Agent` model with all V2 columns (readiness_score, progression_level, model_tier, tools JSONB, completed_artifacts, avg_quality_score, last_reflection_at, archived_at)
 - `app/models/agent_skill.py` — `AgentSkill` model (category enum: skill/work_learning/briefing, token_count, source_artifact_id)
-- `app/models/project.py` — Rewrite `Project` model with brief_draft, brief_published, brief_fingerprint, brief_published_at
+- `app/models/project.py` — `Project` model with brief_draft, brief_published, brief_fingerprint, brief_published_at
 - `app/models/artifact.py` — `Artifact` model with all V2 columns (artifact_type, goal, target_audience, context, description, status enum, budget, cost, git fields)
 - `app/models/artifact_version.py` — `ArtifactVersion` model (s3_prefix, file_manifest JSONB, assumptions JSONB, sources JSONB, execution_wave_id)
 - `app/models/contextual_comment.py` — `ContextualComment` model (source enum, external_comment_id, resolved, resolved_in_version_id)
 - `app/models/execution_wave.py` — `ExecutionWave` model (trigger enum, dag_plan JSONB, assembled_team JSONB, status enum, current_step, total_steps, step_labels JSONB, cost tracking, error_message)
 - `app/models/document.py` — `Document` model (processing_status enum)
 - `app/models/document_chunk.py` — `DocumentChunk` model (embedding vector(1024), chunk_index, token_count)
-- `app/models/git_provider_connection.py` — Rewrite with V2 columns (access_token_encrypted, repositories JSONB, webhook_secret)
-- `app/models/mcp_connection.py` — Rewrite with V2 columns (auth_config_encrypted JSONB, discovered_tools JSONB)
+- `app/models/git_provider_connection.py` — `GitProviderConnection` model (access_token_encrypted, repositories JSONB, webhook_secret)
+- `app/models/mcp_connection.py` — `McpConnection` model (auth_config_encrypted JSONB, discovered_tools JSONB)
 
-**Update:** `app/models/__init__.py` — export all new models. Import `Base` from SQLAlchemy declarative base.
+**Write:** `app/models/__init__.py` — export all models. Import `Base` from SQLAlchemy declarative base.
 
 **Convention:** All models use `TEXT` primary keys (UUID v4 generated in Python). All timestamps use `TIMESTAMP WITH TIME ZONE`. All tables include `workspace_id` FK except `workspaces` itself.
 
@@ -157,11 +157,10 @@ backend/
 
 **Ref:** TDD-02 Section 8
 
-**Goal:** Replace the existing migration with the full V2 schema. Since this is pre-production (no user data), create a clean slate.
+**Goal:** Create the full V2 schema as Alembic migrations from scratch.
 
 **Steps:**
-1. Delete the existing migration file `6e9eb18a2dd4_create_artifact_first_domain_tables.py`.
-2. Create migrations in FK-dependency order:
+1. Create migrations in FK-dependency order:
    - Migration 1: Enable pgvector extension. Create `workspaces`.
    - Migration 2: Create `agents`, `projects`.
    - Migration 3: Create `agent_skills`, `documents`, `git_provider_connections`, `mcp_connections`.
@@ -1115,10 +1114,8 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 ## Dependency Graph
 
 ```
-Sprint 0: Clean Slate
-  ├── 0.1 Remove V1 dead code
-  ├── 0.2 Docker infrastructure
-  └── 0.3 Python dependencies
+Sprint 0: Project Scaffold
+  └── 0.1 Project scaffold + Docker + dependencies
         │
 Sprint 1: Database ─────────────────────────────────────┐
   ├── 1.1 SQLAlchemy models                              │

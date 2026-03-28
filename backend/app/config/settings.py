@@ -33,6 +33,13 @@ class Settings(BaseSettings):
 
     # Optional integrations
     SERPER_API_KEY: Optional[str] = None
+    VOYAGE_API_KEY: Optional[str] = None
+
+    # Encryption key for PATs and auth configs (Fernet)
+    ENCRYPTION_KEY: str = "dev-secret-change-in-production"
+
+    # Webhook base URL (used when auto-configuring webhooks on repos)
+    WEBHOOK_BASE_URL: str = "http://localhost:8000"
 
     # CORS
     CORS_ORIGINS: list[str] = Field(default=["http://localhost:3000"])

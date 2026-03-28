@@ -474,9 +474,9 @@ Agents write code to their **isolated workspace only** — never directly to the
 
 ---
 
-## 8. What We Kill from V1
+## 8. What Was Killed from V1
 
-To achieve this vision, we ruthlessly delete legacy features that add cognitive load and backend fragility:
+To achieve this vision, the following V1 features were removed (all V1 code has been deleted):
 
 | Feature | Reason for Removal |
 |---|---|
@@ -581,18 +581,18 @@ Workspace (user's account)
 
 ### A. State Management — PostgreSQL + pgvector
 
-- **Delete** all `data/*.json` file persistence.
-- **Why:** JSON files corrupt under concurrent execution waves. Migrate to PostgreSQL for ACID-compliant relational data and `pgvector` extension for agent memory/RAG (replacing local ChromaDB).
+- All V1 `data/*.json` file persistence has been removed.
+- **Why:** JSON files corrupt under concurrent execution waves. V2 uses PostgreSQL for ACID-compliant relational data and `pgvector` extension for agent memory/RAG.
 
 ### B. Durable Execution — Temporal.io (or Celery/Redis)
 
-- **Replace** `asyncio.gather` for long-running LLM orchestration.
-- **Why:** If the FastAPI server restarts, `asyncio` drops all running tasks silently. Temporal guarantees that if a server crashes on step 4 of a 10-step agent plan, it resumes exactly at step 4 upon reboot. No more orphaned `executing` tasks.
+- V2 uses Celery + Redis for durable execution instead of bare `asyncio.gather`.
+- **Why:** If the FastAPI server restarts, `asyncio` drops all running tasks silently. Celery guarantees durable task execution with a reaper cron to handle crashes.
 
 ### C. Stateless Workspaces — S3 / Object Storage
 
-- **Replace** local disk writes (`data/workspaces/`) with S3-compatible object storage.
-- **Why:** Local disks prevent horizontal scaling. All artifacts, deliverable versions, and agent context files must be stored in object storage.
+- V2 uses S3-compatible object storage (MinIO) instead of local disk writes.
+- **Why:** Local disks prevent horizontal scaling. All artifacts, deliverable versions, and agent context files are stored in object storage.
 
 ### D. The Diff Engine & Versioning
 
@@ -819,38 +819,13 @@ Without this rule, an agent with 7,000 tokens of past learnings might default to
 
 ## 16. Implementation Roadmap
 
-### Phase 1: The Great Deletion & Database Migration (Weeks 1-2)
-- Strip out WebSocket handlers, Chat APIs, and Kanban/9-state logic
-- Migrate JSON file storage to PostgreSQL + SQLAlchemy (async)
-- Replace local ChromaDB with `pgvector`
-- Define new Artifact/ArtifactVersion/ContextualComment schema
+> **Note:** This section is the original high-level vision roadmap. The detailed, ticket-by-ticket implementation plan is in `docs/TDD/06_IMPLEMENTATION_ROADMAP.md` (49 tickets across 12 sprints). Follow that document for actual implementation — this section is retained for strategic context only.
 
-### Phase 2: The Smart Brief Engine (Week 3)
-- Build the `sufficiency-check` API (pre-flight model, sub-3-second target)
-- Return text-matching coordinates for frontend issue highlighting
-- Build the "New Deliverable" form API contract
-
-### Phase 3: Artifact Versioning & Diffing (Weeks 4-5)
-- Build S3 integration for stateless workspaces
-- Implement the `ArtifactVersion` model with immutable versioning
-- Build prose diffing utility for markdown/text artifacts (in-app, e.g., `react-diff-viewer-continued`)
-- Build GitHub/GitLab PR integration for code artifacts (push to branch, open PR, sync feedback)
-- Build the `ContextualComment` model with text range tracking (prose artifacts only)
-
-### Phase 4: Durable Execution & Safety (Weeks 6-7)
-- Implement Temporal.io (or Celery) for durable DAG execution
-- Implement the "Auto-Assume" fallback — agents never deadlock
-- Implement hard cost circuit breakers per Artifact and per ExecutionWave
-- Implement orphan detection and recovery (reaper background worker)
-- Implement cascade resolution for cancelled/failed dependencies
-
-### Phase 5: Frontend (Weeks 8-12)
-- Smart Brief form with pre-flight validation (Validate button → display issues → fix → re-validate)
-- Execution heartbeat UI (step progress indicator with cost tracking)
-- Prose artifact review UI (document editor with sidebar + in-app diff viewer)
-- Code artifact flow (auto-push to branch → link to GitHub/GitLab PR)
-- Contextual commenting for prose (highlight → comment → iterate)
-- Notification system ("Deliverable Ready for Review")
+### Sprint 0: Project Scaffold + Docker + Dependencies
+### Sprints 1-5: Backend (Database, Core Services, AI Engine, DAG, Orchestration)
+### Sprints 6-7: API Routes (Core + Integrations)
+### Sprints 8-10: Frontend (Scaffold, Core Flows, Settings & Polish)
+### Sprint 11: Integration & QA
 
 ---
 

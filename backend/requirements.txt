@@ -18,6 +18,7 @@ boto3>=1.35,<2
 
 # AI
 anthropic>=0.52,<1
+tiktoken>=0.7,<1
 
 # Settings & validation
 pydantic>=2.10,<3
@@ -30,3 +31,9 @@ beautifulsoup4>=4.12,<5
 
 # HTTP client
 httpx>=0.28,<1
+
+# Encryption
+cryptography>=44.0,<45
+
+# WebSocket
+websockets>=14.0,<15

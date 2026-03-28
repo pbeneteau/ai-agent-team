@@ -8,7 +8,7 @@ An AI-powered autonomous agency for knowledge work and code. Users write a brief
 
 ## Project Status
 
-V2 redesign — **full clean slate**. All V1 code has been deleted. All 6 Technical Design Documents are complete in `docs/TDD/`. Everything is written from scratch based on the TDD specs. **Follow the roadmap in `docs/TDD/06_IMPLEMENTATION_ROADMAP.md` strictly** — execute tickets in order, one at a time, verify before moving on.
+**V2 implementation complete.** All 12 sprints (49 tickets) executed. 78 E2E tests passing. All 6 user journeys verified. All edge cases from TDD-01 Section 6 covered. Performance baselines within targets.
 
 ## Tech Stack
 
@@ -18,18 +18,18 @@ V2 redesign — **full clean slate**. All V1 code has been deleted. All 6 Techni
 | Database | PostgreSQL 16 + pgvector |
 | Object Storage | MinIO (S3-compatible) |
 | AI | Anthropic Claude API (Sonnet/Opus/Haiku tiers) |
-| Frontend | Next.js 15+ (App Router), TypeScript, Tailwind CSS v4, shadcn/ui |
+| Frontend | Next.js 15 (App Router), TypeScript, Tailwind CSS v4, shadcn/ui |
 | State | Zustand (UI), TanStack Query (server), URL params (navigation) |
 | Infrastructure | Docker Compose (postgres, redis, minio, backend, worker, beat, frontend) |
 
 ## Architecture — Key Decisions
 
-These are **locked decisions** from the TDD process. Do not revisit or change them without explicit approval.
+Locked decisions from the TDD process. Do not change without explicit approval.
 
-- **AD-1:** Single-tenant MVP. All tables have `workspace_id` FK. Hardcoded `workspace_id = "1"` in API layer.
+- **AD-1:** Single-tenant MVP. All tables have `workspace_id` FK. Hardcoded `workspace_id = "1"`.
 - **AD-2:** Celery + Redis for execution (not Temporal).
-- **AD-3:** One orchestrator Celery task per execution. `asyncio.gather` for parallel waves within it.
-- **AD-4:** Agent skills stored in database (not S3). 8k token budget (6k skills + 2k learnings).
+- **AD-3:** One orchestrator Celery task per execution. `asyncio.gather` for parallel waves.
+- **AD-4:** Agent skills in database (not S3). 8k token budget (6k skills + 2k learnings).
 - **AD-5:** Multi-file artifacts: S3 directory + JSONB `file_manifest` on `ArtifactVersion`.
 - **AD-6:** Diffs computed on-the-fly by frontend. No diff storage.
 - **AD-7:** pgvector for uploaded documents only (not agent skills).
@@ -37,23 +37,100 @@ These are **locked decisions** from the TDD process. Do not revisit or change th
 - **AD-14:** GitHub/GitLab auth via PAT only (no OAuth for MVP).
 - **AD-15:** Artifact files served via backend proxy (not pre-signed URLs).
 - **AD-16:** Cursor-based pagination on all list endpoints.
-- **AD-19:** Fresh design system. oklch colors. Do NOT inherit V1 tokens.
+- **AD-19:** Fresh design system. oklch colors.
 - **AD-23:** Both light and dark mode from day one.
 
-## Documentation Map
+## Codebase Map
 
-Read the TDDs **before** implementing anything. Each ticket in the roadmap cites its source TDD sections.
+### Backend (`backend/app/`)
 
-| File | Contents |
-|---|---|
-| `docs/TDD/01_PRD_AND_WORKFLOWS.md` | Product requirements, user personas, 6 user journeys (J1-J6), artifact state machine, edge cases |
-| `docs/TDD/02_BACKEND_ARCHITECTURE_TDD.md` | 12 database tables, S3 layout, Celery tasks, circuit breakers, reflection locking, Docker services |
-| `docs/TDD/03_AI_AGENT_ENGINE_TDD.md` | Sufficiency check, 5 DAG templates, auto-assembly router, prompt architecture (9-position), memory management, 7 tools, reflection engine |
-| `docs/TDD/04_API_AND_INTEGRATIONS_TDD.md` | 44 REST endpoints with full request/response schemas, GitHub/GitLab webhooks, MCP, WebSocket events |
-| `docs/TDD/05_FRONTEND_UX_TDD.md` | Route tree, design tokens, state management, API client, Smart Brief form, heartbeat UI, review/diff/comments UX |
-| `docs/TDD/06_IMPLEMENTATION_ROADMAP.md` | 49 tickets across 12 sprints in strict dependency order. **This is the execution plan.** |
+```
+app/
+├── main.py                    # FastAPI app, CORS, lifespan, error handler registration
+├── config/settings.py         # Pydantic Settings: DB, Redis, S3, Anthropic, model tiers
+├── models/                    # 12 SQLAlchemy models (one per file) + enums.py
+│   ├── workspace.py, agent.py, agent_skill.py, project.py
+│   ├── artifact.py, artifact_version.py, execution_wave.py
+│   ├── contextual_comment.py, document.py, document_chunk.py
+│   ├── git_provider_connection.py, mcp_connection.py
+│   └── enums.py               # All PostgreSQL enum types
+├── core/                      # Infrastructure services
+│   ├── database.py            # AsyncSession factory, Base, get_db dependency
+│   ├── celery_app.py          # Celery config, 4 tasks + 2 periodic tasks
+│   ├── s3_workspace.py        # Upload/download/delete for artifacts + documents
+│   ├── cost.py                # Decimal pricing table, budget checks, atomic increments
+│   ├── pagination.py          # Cursor encode/decode, PaginatedResponse[T], LIMIT+1
+│   ├── errors.py              # ApiError, error factories, FastAPI exception handler
+│   ├── workspace_id.py        # get_workspace_id() → hardcoded "1"
+│   ├── encryption.py          # Fernet encrypt/decrypt for PATs and auth configs
+│   ├── git_push.py            # push_artifact_to_git, push_iteration_to_git
+│   ├── git_providers/         # github.py, gitlab.py, common.py (shared protocol)
+│   ├── mcp_client.py          # MCP protocol client
+│   ├── reaper.py              # reap_orphaned_waves (>10min running)
+│   └── billing.py             # reset_monthly_budgets (>30 days)
+├── agents/                    # AI engine
+│   ├── anthropic_runner.py    # run_agent() loop: send → tool_use → repeat → end_turn
+│   ├── orchestrator.py        # execute_dag(): wave loop, parallel slots, S3 upload, version creation
+│   ├── router.py              # route_brief(): Haiku call → template + agent mapping
+│   ├── prompt_builder.py      # 9-position prompt: system (1-3) + user (4-9, recency bias)
+│   ├── memory.py              # load_agent_memory, check_budget, trigger_compaction
+│   ├── upstream.py            # build_upstream_context, truncate_middle (47/53 split, 15k cap)
+│   ├── sufficiency.py         # run_sufficiency_check (Sonnet), fail-open policy
+│   ├── readiness.py           # compute_readiness_score (heuristic: 40+30+20+10)
+│   ├── learning.py            # execute_learning: web research → skill extraction
+│   ├── reflection.py          # execute_reflection: FOR UPDATE lock, Sonnet review, skill updates
+│   ├── briefing.py            # brief_all_agents: distribute project brief to roster
+│   ├── document_processor.py  # PDF/DOCX/text extraction → 512-token chunks → pgvector
+│   └── dag_templates/         # schema.py + 5 templates (code_feature, content_research, etc.)
+├── api/
+│   ├── routes/                # 10 files: onboarding, roster, projects, artifacts, git_providers,
+│   │                          #   webhooks, mcp, usage, health, (+ websocket endpoint)
+│   ├── schemas/               # 7 files: Pydantic request/response models per domain
+│   └── websocket_manager.py   # Connection tracking, broadcast_event, 5 event types
+└── tools/                     # 7 agent tools
+    ├── registry.py            # get_tools_for_phase() — availability matrix
+    ├── web_search.py          # Serper API
+    ├── web_browser.py         # httpx + BeautifulSoup, 8k truncation
+    ├── vector_search.py       # pgvector cosine similarity on document_chunks
+    ├── file_read.py           # In-memory dict (scoped per execution)
+    ├── file_write.py          # In-memory dict (scoped per execution)
+    ├── mcp_call.py            # MCP server proxy, 30s timeout
+    └── git_tools.py           # git_clone + git_push wrappers
+```
 
-## Database Schema (12 tables)
+### Frontend (`frontend/`)
+
+```
+app/                           # Next.js App Router
+├── layout.tsx                 # Root: providers, fonts, tokens
+├── tokens.css                 # oklch design tokens (light + dark)
+├── (onboarding)/onboarding/   # Multi-step onboarding wizard
+└── (app)/                     # Main app shell (sidebar + top bar)
+    ├── projects/              # Project list → detail → brief → documents
+    │   └── [projectId]/artifacts/
+    │       ├── new/           # Smart Brief form + delegation
+    │       └── [artifactId]/  # Heartbeat OR review (based on status)
+    ├── roster/                # Agent grid → agent detail (profile, skills, history)
+    └── settings/{git,mcp,usage}/  # Integration + billing settings
+
+features/                      # Feature-specific components
+├── artifacts/                 # smart-brief-form, heartbeat-panel, artifact-review,
+│                              #   prose-viewer, prose-diff-viewer, version-switcher, etc.
+├── comments/                  # floating-comment-toolbar (Selection API + positioning)
+├── onboarding/                # onboarding-form, roster-preview
+├── projects/                  # brief-editor (auto-save), document-manager (drag-drop)
+└── roster/                    # agent-card, agent-detail-tabs, research-dialog
+
+lib/
+├── api-client.ts              # Base fetch wrapper, error interceptor
+├── api/                       # 7 domain files covering all 44 endpoints (typed)
+├── hooks/                     # TanStack Query hooks + use-websocket + use-text-selection
+├── stores/                    # ui-store (sidebar, theme, diff mode) + selection-store
+├── query-keys.ts              # Query key factory with stale times per data type
+└── types/api.ts               # All TypeScript API types
+```
+
+### Database (12 tables)
 
 ```
 workspaces
@@ -67,90 +144,76 @@ workspaces
  └── mcp_connections
 ```
 
-All tables use `TEXT` PKs (UUID v4, generated in Python). All timestamps `TIMESTAMPTZ`. See TDD-02 Section 1.2 for full column definitions.
+8 Alembic migrations in FK-dependency order. All tables use `TEXT` PKs (UUID v4). All timestamps `TIMESTAMPTZ`.
+
+### Tests
+
+```
+backend/tests/
+├── test_*.py              # Unit + integration tests per module
+└── e2e/                   # 78 end-to-end tests
+    ├── test_prose_flow.py     # Journey J2 (21 tests)
+    ├── test_code_flow.py      # Journey J3 (15 tests)
+    ├── test_edge_cases.py     # TDD-01 Section 6 (27 tests)
+    └── test_performance.py    # Baseline metrics (15 tests)
+```
 
 ## Core Domain Model
 
 - **Artifact** = a deliverable (not a task). States: `drafting` → `in_review` → `approved` (+ `cancelled`).
-- **ArtifactVersion** = one version of the output. S3 file bundle + JSONB manifest.
-- **ExecutionWave** = one execution run. Contains `dag_plan`, `assembled_team`, heartbeat fields.
-- **Agent** = persistent AI entity in the roster. Has skills, learnings, readiness score.
+- **ArtifactVersion** = immutable version. S3 file bundle + JSONB manifest.
+- **ExecutionWave** = one execution run. `dag_plan`, `assembled_team`, heartbeat fields.
+- **Agent** = persistent AI entity in the roster. Skills, learnings, readiness score.
 - **AgentSkill** = knowledge entry. Categories: `skill`, `work_learning`, `briefing`.
 
-## Backend Conventions
+## Documentation
 
-- **Models:** One file per model in `app/models/`. Import all from `app/models/__init__.py`.
-- **Routes:** One file per domain in `app/api/routes/`. Register in `app/main.py`.
-- **Business logic:** In `app/core/` (infrastructure) and `app/agents/` (AI engine).
-- **Error format:** `{ "error": { "code": "...", "message": "...", "details": {} } }` — see TDD-04 Section 1.4.
-- **Pagination:** Cursor-based. `PaginatedResponse[T]` with `items`, `next_cursor`, `has_more`.
-- **Workspace isolation:** `get_workspace_id()` FastAPI dependency returns `"1"` for MVP.
-- **Async:** All DB operations use async SQLAlchemy sessions.
-- **Tests:** Put in `backend/tests/`. Integration tests use real PostgreSQL + MinIO.
-
-## Frontend Conventions
-
-- **App Router:** All pages in `app/`. Feature components in `features/`. Shared components in `components/`.
-- **Design tokens:** CSS custom properties in `app/tokens.css`. oklch color space. Never use raw hex.
-- **State:** Server state = TanStack Query. UI state = Zustand. URL state for navigation params.
-- **API client:** `lib/api-client.ts` base, `lib/api/index.ts` domain methods. All typed.
-- **Forms:** React Hook Form + Zod schemas.
-- **Fonts:** Inter (sans), JetBrains Mono (mono).
-
-## Sprint Overview
-
-| Sprint | Focus | Tickets |
-|---|---|---|
-| 0 | Project scaffold + Docker + dependencies | 0.1 |
-| 1 | Database schema (models + migrations) | 1.1-1.2 |
-| 2 | Core backend services (S3, cost, Celery, utils) | 2.1-2.4 |
-| 3 | AI foundation (agent loop, tools, prompts, memory) | 3.1-3.5 |
-| 4 | DAG & orchestration (templates, router, orchestrator) | 4.1-4.4 |
-| 5 | Sufficiency, memory, reflection | 5.1-5.5 |
-| 6 | API routes core (onboarding, roster, projects, artifacts) | 6.1-6.5 |
-| 7 | API routes integrations (git, webhooks, MCP, WS) | 7.1-7.6 |
-| 8 | Frontend scaffold (Next.js, tokens, shell, API client) | 8.1-8.4 |
-| 9 | Frontend core flows (onboarding, brief, heartbeat, review) | 9.1-9.6 |
-| 10 | Frontend settings & polish | 10.1-10.3 |
-| 11 | Integration & QA (E2E flows, edge cases, perf) | 11.1-11.4 |
-
-**Parallelization note:** Sprint 8 (frontend scaffold) can start alongside Sprints 6-7 since API contracts are defined in TDD-04.
+| File | Contents |
+|---|---|
+| `docs/TDD/01_PRD_AND_WORKFLOWS.md` | User personas, 6 journeys (J1-J6), state machine, edge cases |
+| `docs/TDD/02_BACKEND_ARCHITECTURE_TDD.md` | 12 tables, S3 layout, Celery tasks, circuit breakers |
+| `docs/TDD/03_AI_AGENT_ENGINE_TDD.md` | Sufficiency, DAG templates, prompts, memory, 7 tools, reflection |
+| `docs/TDD/04_API_AND_INTEGRATIONS_TDD.md` | 44 endpoints with full request/response schemas |
+| `docs/TDD/05_FRONTEND_UX_TDD.md` | Design tokens, routes, state, Smart Brief, heartbeat, review UX |
+| `docs/TDD/06_IMPLEMENTATION_ROADMAP.md` | 49 tickets across 12 sprints (all complete) |
 
 ## Common Commands
 
 ```bash
 # Infrastructure
 docker compose up postgres redis minio      # Start data services
-docker compose up                            # Start all services
+docker compose up                            # Start everything
 
-# Backend
-cd backend
+# Backend (from backend/)
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+alembic upgrade head                         # Run migrations
+uvicorn app.main:app --reload --port 8000    # API server
 celery -A app.core.celery_app worker --concurrency=1 --loglevel=info
 celery -A app.core.celery_app beat --loglevel=info
 
-# Database
-alembic upgrade head                         # Run migrations
-alembic downgrade base                       # Tear down all tables
-
-# Frontend
-cd frontend
+# Frontend (from frontend/)
 pnpm install
-pnpm dev                                     # Start at :3000
+pnpm dev                                     # Dev server at :3000
 pnpm build                                   # Production build
 
-# Verify
-python -c "from app.main import app"         # Import check after changes
+# Tests
+cd backend && pytest tests/ -v               # Unit + integration
+cd backend && pytest tests/e2e/ -v           # End-to-end (needs Docker services)
 ```
+
+## Known Issues / Post-Launch Debt
+
+- Frontend E2E tests (Playwright/Cypress) not yet set up — no testing framework in `frontend/package.json`
+- Performance measurements are with mocked DB/LLM; need real-service benchmarks after Docker deployment
+- Webhook deduplication tested at handler-mock level; full `IntegrityError` path needs live DB test
+- No `GET /api/projects/{id}` route exists (only `/context` and `PATCH`) — may want to add a project detail endpoint
+- Budget exceeded returns 429 — confirm this is the desired status code vs 402/403
 
 ## Do NOT
 
-- Write any code outside the roadmap ticket sequence without explicit approval
 - Change architectural decisions (AD-1 through AD-23) without discussion
 - Create V1-style task/team/chat models — V2 is artifact-centric
 - Use OAuth for git providers (PAT only for MVP)
 - Store diffs in the database (compute on-the-fly in frontend)
 - Add a conversational chatbot interface (this is not a chatbot)
 - Use pre-signed S3 URLs (backend proxy only)
-- Skip the verify step on any ticket

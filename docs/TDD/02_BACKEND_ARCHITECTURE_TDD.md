@@ -907,12 +907,9 @@ Migration 7: contextual_comments, document_chunks
 Migration 8: Seed default workspace (id = hardcoded MVP workspace)
 ```
 
-### 8.2 Existing Schema Reconciliation
+### 8.2 Clean Slate
 
-The current codebase has a migration (`6e9eb18a2dd4`) that created `projects`, `artifacts`, `artifact_versions`, and `contextual_comments`. The new migrations should:
-
-1. **Drop and recreate** these tables with the expanded schema defined in this document (the existing tables have fewer columns and no `workspace_id`).
-2. Since this is pre-production (no user data to preserve), a clean slate migration is appropriate.
+The codebase has no existing migrations or tables. All migrations are created from scratch following the order defined in Section 8.1.
 
 ### 8.3 pgvector Extension
 

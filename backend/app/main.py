@@ -1,31 +1,18 @@
 from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
-from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
 from app.config.settings import settings
-
-
-class ApiError(Exception):
-    def __init__(
-        self,
-        status_code: int,
-        code: str,
-        message: str,
-        details: dict[str, Any] | None = None,
-    ) -> None:
-        self.status_code = status_code
-        self.code = code
-        self.message = message
-        self.details = details or {}
+from app.core.errors import ApiError, api_error_handler
+from app.core.s3_workspace import ensure_bucket
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    # Startup: S3 bucket init will be added in Sprint 2
+    # Startup: ensure S3 bucket exists
+    ensure_bucket()
     yield
     # Shutdown: cleanup if needed
 
@@ -44,26 +31,59 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.exception_handler(ApiError)(api_error_handler)
 
-@app.exception_handler(ApiError)
-async def api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "error": {
-                "code": exc.code,
-                "message": exc.message,
-                "details": exc.details,
-            }
-        },
-    )
+# ---------------------------------------------------------------------------
+# Register routers (Sprint 6)
+# ---------------------------------------------------------------------------
+
+from app.api.routes.onboarding import router as onboarding_router
+from app.api.routes.roster import router as roster_router
+from app.api.routes.projects import router as projects_router
+from app.api.routes.artifacts import router as artifacts_router
+
+app.include_router(onboarding_router)
+app.include_router(roster_router)
+app.include_router(projects_router)
+app.include_router(artifacts_router)
+
+# ---------------------------------------------------------------------------
+# Register routers (Sprint 7)
+# ---------------------------------------------------------------------------
+
+from app.api.routes.git_providers import router as git_providers_router
+from app.api.routes.webhooks import router as webhooks_router
+from app.api.routes.mcp import router as mcp_router
+from app.api.routes.usage import router as usage_router
+from app.api.routes.health import router as health_router
+
+app.include_router(git_providers_router)
+app.include_router(webhooks_router)
+app.include_router(mcp_router)
+app.include_router(usage_router)
+app.include_router(health_router)
 
 
-async def get_workspace_id() -> str:
-    """MVP: hardcoded. Post-MVP: extract from JWT."""
-    return "1"
+# ---------------------------------------------------------------------------
+# WebSocket endpoint (Sprint 7 — Ticket 7.5)
+# ---------------------------------------------------------------------------
 
 
-@app.get("/api/health")
-async def health_check() -> dict[str, str]:
-    return {"status": "ok"}
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket) -> None:
+    """WebSocket connection endpoint for real-time event broadcasting.
+
+    Ref: TDD-05 Section 6.
+    """
+    from app.api.websocket_manager import ws_manager
+
+    await ws_manager.connect(websocket)
+    try:
+        while True:
+            # Keep the connection alive — wait for client messages
+            # (clients may send pings; we just read and discard)
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await ws_manager.disconnect(websocket)
+    except Exception:
+        await ws_manager.disconnect(websocket)
