@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Update `SufficiencyResponse` type to use `eligible` (replacing `is_sufficient`) and add a `score` field; remove top-level `suggestions` array.
+- Update `SufficiencyIssue` type to use `issue` and `suggestion` fields (replacing `message`), narrow `severity` to `"critical" | "warning"`, and make `matched_text` non-nullable.
+- Display per-issue `suggestion` text in the sufficiency feedback UI when present.
+
+### Fixed
+
+- Fix sufficiency eligibility check in `SmartBriefForm` to read `eligible` instead of the removed `is_sufficient` field, restoring correct form gating and success toast behaviour.
+
+---
+
+## [Unreleased] (previous)
+
 ### Added
 
 - Add `docs/ARCHITECTURE.md` with a comprehensive system-level architecture overview covering module map, technology stack, key architectural patterns (agent orchestration loop, event-driven run streaming, shared type contracts), module dependency graph, deployment topology, cross-cutting concerns, and an index of Architecture Decision Records (ADR-001 through ADR-007).

@@ -274,6 +274,28 @@ Smart Brief ──> Sufficiency Check (Sonnet)
 | WebSocket | 1 | Real-time events (status changes, budget warnings) |
 | Health | 1 | Service health check |
 
+### `SufficiencyResponse` Shape
+
+The response returned by `api.artifacts.validate()` has the following structure:
+
+```typescript
+interface SufficiencyResponse {
+  eligible: boolean;   // true when the brief meets the quality threshold
+  score: number;
+  issues: SufficiencyIssue[];
+}
+
+interface SufficiencyIssue {
+  field: string;
+  severity: "critical" | "warning";
+  matched_text: string;
+  issue: string;        // human-readable description of the problem
+  suggestion: string;   // actionable recommendation shown below the issue
+}
+```
+
+The `eligible` flag (previously `is_sufficient`) controls whether submission is allowed. Each issue now carries an `issue` message and an optional `suggestion` displayed beneath it in the Smart Brief form.
+
 ## Testing
 
 ```bash
