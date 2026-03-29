@@ -34,12 +34,10 @@ export default function OnboardingPage() {
       const payload: OnboardingRequest = {
         company_name: values.company_name,
         domain_description: values.domain_description,
-        use_case: values.use_case,
+        use_case: "code",
         ...(values.product_description ? { product_description: values.product_description } : {}),
         ...(values.tech_stack ? { tech_stack: values.tech_stack } : {}),
         ...(values.company_stage ? { company_stage: values.company_stage } : {}),
-        ...(values.target_audience ? { target_audience: values.target_audience } : {}),
-        ...(values.main_goals ? { main_goals: values.main_goals } : {}),
         ...(values.existing_team ? { existing_team: values.existing_team } : {}),
         ...(values.team_size ? { team_size: values.team_size } : {}),
       };
@@ -50,7 +48,7 @@ export default function OnboardingPage() {
           setStep("preview");
         },
         onError: (error) => {
-          toast.error(error.message || "Failed to generate agency");
+          toast.error(error.message || "Failed to generate team");
         },
       });
     },

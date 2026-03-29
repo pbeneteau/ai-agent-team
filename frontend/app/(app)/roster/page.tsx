@@ -62,7 +62,7 @@ export default function RosterPage() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <Users className="h-6 w-6 text-[var(--color-accent)]" />
-          <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">Agency Roster</h1>
+          <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">Team</h1>
         </div>
         <Button onClick={() => setAddOpen(true)}>
           <Plus className="h-4 w-4" /> Add Agent
@@ -128,7 +128,7 @@ export default function RosterPage() {
           {workers.length > 0 && (
             <section>
               <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-secondary)]">
-                Workers · {workers.length}
+                Engineers · {workers.length}
               </h2>
               <AgentGrid agents={workers} />
             </section>

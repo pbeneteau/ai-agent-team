@@ -36,6 +36,7 @@ from app.core.pagination import (
 from app.core.workspace_id import get_workspace_id
 from app.models.artifact import Artifact
 from app.models.document import Document
+from app.models.git_provider_connection import GitProviderConnection
 from app.models.project import Project
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,42 @@ async def _get_project_or_404(
     if project is None or project.workspace_id != workspace_id:
         raise not_found("project", project_id)
     return project
+
+
+async def _fetch_readme(
+    connection_id: str, repo_full_name: str, db: AsyncSession,
+) -> str | None:
+    """Fetch README from a git repo via the provider API. Returns None on failure."""
+    try:
+        conn = await db.get(GitProviderConnection, connection_id)
+        if conn is None or conn.status != "active":
+            return None
+
+        from app.core.encryption import decrypt_string
+
+        token = decrypt_string(conn.access_token_encrypted)
+        parts = repo_full_name.split("/", 1)
+        if len(parts) != 2:
+            return None
+        owner, repo = parts
+
+        if conn.provider == "github":
+            from app.core.git_providers.github import GitHubClient
+            client = GitHubClient(token)
+        elif conn.provider == "gitlab":
+            from app.core.git_providers.gitlab import GitLabClient
+            client = GitLabClient(token)
+        else:
+            return None
+
+        try:
+            readme = await client.get_readme(owner, repo)
+            return readme
+        finally:
+            await client.close()
+    except Exception:
+        logger.warning("Failed to fetch README for %s (non-fatal)", repo_full_name, exc_info=True)
+        return None
 
 
 def _brief_status(project: Project) -> str:
@@ -109,6 +146,9 @@ async def list_projects(
             id=p.id,
             name=p.name,
             description=p.description,
+            primary_language=p.primary_language,
+            framework=p.framework,
+            git_repo_url=p.git_repo_url,
             artifact_count=art_count,
             brief_status=_brief_status(p),
             created_at=p.created_at,
@@ -131,11 +171,22 @@ async def create_project(
     db: AsyncSession = Depends(get_db),
 ) -> ProjectDetail:
     now = datetime.now(timezone.utc)
+
+    # Fetch README from git if connection + repo provided
+    readme_content: str | None = None
+    if body.git_connection_id and body.git_repo_url:
+        readme_content = await _fetch_readme(body.git_connection_id, body.git_repo_url, db)
+
     project = Project(
         id=str(uuid.uuid4()),
         workspace_id=workspace_id,
         name=body.name,
         description=body.description,
+        primary_language=body.primary_language,
+        framework=body.framework,
+        package_manager=body.package_manager,
+        git_repo_url=body.git_repo_url,
+        brief_draft=readme_content,
         created_at=now,
         updated_at=now,
     )
@@ -146,6 +197,11 @@ async def create_project(
         id=project.id,
         name=project.name,
         description=project.description,
+        primary_language=project.primary_language,
+        framework=project.framework,
+        package_manager=project.package_manager,
+        git_repo_url=project.git_repo_url,
+        has_readme=readme_content is not None,
         artifact_count=0,
         brief_status=_brief_status(project),
         brief_draft=project.brief_draft,
@@ -177,6 +233,11 @@ async def get_project(
         id=project.id,
         name=project.name,
         description=project.description,
+        primary_language=project.primary_language,
+        framework=project.framework,
+        package_manager=project.package_manager,
+        git_repo_url=project.git_repo_url,
+        has_readme=project.brief_draft is not None and len(project.brief_draft) > 0,
         artifact_count=art_count,
         brief_status=_brief_status(project),
         brief_draft=project.brief_draft,
@@ -206,6 +267,14 @@ async def update_project(
         project.name = body.name
     if body.description is not None:
         project.description = body.description
+    if body.primary_language is not None:
+        project.primary_language = body.primary_language
+    if body.framework is not None:
+        project.framework = body.framework
+    if body.package_manager is not None:
+        project.package_manager = body.package_manager
+    if body.git_repo_url is not None:
+        project.git_repo_url = body.git_repo_url
 
     await db.flush()
 
@@ -217,6 +286,11 @@ async def update_project(
         id=project.id,
         name=project.name,
         description=project.description,
+        primary_language=project.primary_language,
+        framework=project.framework,
+        package_manager=project.package_manager,
+        git_repo_url=project.git_repo_url,
+        has_readme=project.brief_draft is not None and len(project.brief_draft) > 0,
         artifact_count=art_count,
         brief_status=_brief_status(project),
         brief_draft=project.brief_draft,

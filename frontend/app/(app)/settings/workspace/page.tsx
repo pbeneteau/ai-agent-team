@@ -32,8 +32,6 @@ const schema = z.object({
   product_description: z.string().max(2000).optional(),
   tech_stack: z.string().max(500).optional(),
   company_stage: z.enum(["idea", "startup", "growing", "established"]).optional(),
-  target_audience: z.string().max(1000).optional(),
-  main_goals: z.string().max(2000).optional(),
   existing_team: z.string().max(500).optional(),
 });
 type FormValues = z.infer<typeof schema>;
@@ -79,8 +77,6 @@ export default function WorkspaceSettingsPage() {
       domain_description: "",
       product_description: "",
       tech_stack: "",
-      target_audience: "",
-      main_goals: "",
       existing_team: "",
     },
   });
@@ -93,8 +89,6 @@ export default function WorkspaceSettingsPage() {
         product_description: workspace.product_description ?? "",
         tech_stack: workspace.tech_stack ?? "",
         company_stage: workspace.company_stage ?? undefined,
-        target_audience: workspace.target_audience ?? "",
-        main_goals: workspace.main_goals ?? "",
         existing_team: workspace.existing_team ?? "",
       });
     }
@@ -137,9 +131,9 @@ export default function WorkspaceSettingsPage() {
       {/* Company Context */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Company Context</CardTitle>
+          <CardTitle className="text-base">Engineering Defaults</CardTitle>
           <CardDescription>
-            This information is used to tailor your AI agents. More detail = better results.
+            These defaults are used to configure your AI engineering team. Tech stack and team context improve agent performance.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -154,9 +148,9 @@ export default function WorkspaceSettingsPage() {
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-[var(--color-text-primary)]">Domain / Industry</label>
+              <label className="text-sm font-medium text-[var(--color-text-primary)]">What does your product do?</label>
               <Textarea
-                placeholder="B2B project management tool for small engineering teams"
+                placeholder="B2B project management tool for engineering teams. REST API + React SPA."
                 rows={2}
                 {...register("domain_description")}
               />
@@ -190,28 +184,11 @@ export default function WorkspaceSettingsPage() {
               </div>
             </div>
 
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium text-[var(--color-text-primary)]">Target Audience</label>
-              <Input
-                placeholder="Small B2B SaaS companies, 10–200 employees"
-                {...register("target_audience")}
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium text-[var(--color-text-primary)]">Main Goals</label>
-              <Textarea
-                placeholder="What do you want to accomplish? e.g. ship faster, improve docs quality"
-                rows={2}
-                {...register("main_goals")}
-              />
-            </div>
-
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5">
-                <label className="text-sm font-medium text-[var(--color-text-primary)]">Existing Team Roles</label>
+                <label className="text-sm font-medium text-[var(--color-text-primary)]">Engineering Team</label>
                 <Input
-                  placeholder="1 founder, 2 engineers"
+                  placeholder="1 founder, 2 backend, 1 frontend"
                   {...register("existing_team")}
                 />
               </div>
@@ -237,9 +214,9 @@ export default function WorkspaceSettingsPage() {
       {/* Context Documents */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Context Documents</CardTitle>
+          <CardTitle className="text-base">Reference Documents</CardTitle>
           <CardDescription>
-            PDFs, Word docs, or text files your agents can reference across all projects.
+            Architecture docs, API specs, or style guides your agents can reference across all codebases.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">

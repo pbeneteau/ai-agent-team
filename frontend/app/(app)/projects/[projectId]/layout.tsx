@@ -14,9 +14,9 @@ import { useProjectDetail } from "@/lib/hooks/use-projects";
 import { cn } from "@/lib/utils";
 
 const tabs = [
-  { label: "Artifacts", href: "" },
-  { label: "Brief", href: "/brief" },
-  { label: "Documents", href: "/documents" },
+  { label: "Tasks", href: "" },
+  { label: "Engineering Context", href: "/brief" },
+  { label: "Reference Docs", href: "/documents" },
 ];
 
 export default function ProjectLayout({ children }: { children: React.ReactNode }) {
@@ -36,7 +36,7 @@ export default function ProjectLayout({ children }: { children: React.ReactNode 
           className="inline-flex items-center gap-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
         >
           <ArrowLeft className="h-3 w-3" />
-          Projects
+          Repos
         </Link>
         {isLoading ? (
           <Skeleton className="h-7 w-48" />

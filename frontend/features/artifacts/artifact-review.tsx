@@ -77,17 +77,22 @@ export function ArtifactReview({ artifact, onShowDiff }: ArtifactReviewProps) {
     );
   }
 
-  // Code artifacts use a different layout
+  // Code artifacts use the code review layout
   if (artifact.artifact_type === "code") {
     return (
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
+            <VersionSwitcher
+              versions={versions}
+              selectedVersion={selectedVersion}
+              onSelectVersion={setSelectedVersion}
+            />
             <Badge variant={statusVariant[artifact.status]}>
               {statusLabel[artifact.status]}
             </Badge>
             <span className="text-sm text-[var(--color-text-secondary)]">
-              v{selectedVersion} &middot; ${artifact.total_cost_usd.toFixed(2)}
+              ${artifact.total_cost_usd.toFixed(2)}
             </span>
           </div>
           {artifact.status === "in_review" && (
@@ -124,7 +129,7 @@ export function ArtifactReview({ artifact, onShowDiff }: ArtifactReviewProps) {
           </Badge>
         </div>
         {artifact.status === "in_review" && (
-          <ArtifactActions artifactId={artifact.id} artifactType="prose" />
+          <ArtifactActions artifactId={artifact.id} artifactType="code" />
         )}
       </div>
 

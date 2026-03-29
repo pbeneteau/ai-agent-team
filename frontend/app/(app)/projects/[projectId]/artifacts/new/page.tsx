@@ -15,9 +15,9 @@ export default function NewArtifactPage() {
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <div>
-        <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">New Deliverable</h2>
+        <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">New Task</h2>
         <p className="text-sm text-[var(--color-text-secondary)]">
-          Describe what you need. Your AI team will review, plan, and execute.
+          Describe the code you need. Your AI team will plan, build, and review.
         </p>
       </div>
       <SmartBriefForm projectId={params.projectId} />

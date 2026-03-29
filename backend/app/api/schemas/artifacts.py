@@ -216,5 +216,8 @@ class ArtifactListItem(BaseModel):
     status: str
     total_cost_usd: float
     current_version: int
+    git_feature_branch: str | None = None
+    git_pr_url: str | None = None
+    git_pr_number: int | None = None
     created_at: datetime
     updated_at: datetime

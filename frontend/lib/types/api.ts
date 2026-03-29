@@ -180,11 +180,16 @@ export interface ProjectListItem {
   id: string;
   name: string;
   description: string | null;
+  primary_language: string | null;
+  framework: string | null;
+  git_repo_url: string | null;
   artifact_count: number;
   created_at: string;
 }
 
 export interface ProjectDetail extends ProjectListItem {
+  package_manager: string | null;
+  has_readme: boolean;
   brief_status: "none" | "draft" | "published";
   brief_draft: string | null;
   brief_published: string | null;
@@ -196,11 +201,20 @@ export interface ProjectDetail extends ProjectListItem {
 export interface CreateProjectRequest {
   name: string;
   description?: string;
+  primary_language?: string;
+  framework?: string;
+  package_manager?: string;
+  git_repo_url?: string;
+  git_connection_id?: string;
 }
 
 export interface UpdateProjectRequest {
   name?: string;
   description?: string;
+  primary_language?: string;
+  framework?: string;
+  package_manager?: string;
+  git_repo_url?: string;
 }
 
 export interface BriefContext {
@@ -221,7 +235,7 @@ export interface DocumentItem {
 
 // ── Artifacts ───────────────────────────────────────────────────────────
 
-export type ArtifactType = "prose" | "code";
+export type ArtifactType = "code";
 export type ArtifactStatus = "drafting" | "in_review" | "approved" | "cancelled";
 
 export interface CreateArtifactRequest {
@@ -268,6 +282,9 @@ export interface ArtifactListItem {
   status: ArtifactStatus;
   current_version: number;
   total_cost_usd: number;
+  git_feature_branch: string | null;
+  git_pr_url: string | null;
+  git_pr_number: number | null;
   created_at: string;
 }
 

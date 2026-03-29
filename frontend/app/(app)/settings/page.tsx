@@ -9,6 +9,6 @@ import { useRouter } from "next/navigation";
 
 export default function SettingsPage() {
   const router = useRouter();
-  useEffect(() => { router.replace("/settings/workspace"); }, [router]);
+  useEffect(() => { router.replace("/settings/git"); }, [router]);
   return null;
 }

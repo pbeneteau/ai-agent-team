@@ -92,7 +92,7 @@ export function AgentCard({ agent }: AgentCardProps) {
                 </span>
               </div>
               <span className="text-xs text-[var(--color-text-tertiary)]">
-                {agent.completed_artifacts} artifact{agent.completed_artifacts !== 1 ? "s" : ""}
+                {agent.completed_artifacts} task{agent.completed_artifacts !== 1 ? "s" : ""}
               </span>
             </div>
           </div>

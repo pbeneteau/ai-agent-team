@@ -1,13 +1,13 @@
 "use client";
 
 /**
- * Projects list page — grid of project cards + "New Project" button.
+ * Projects list page — grid of project cards + "Add Repo" button.
  *
  * Ref: TDD-05 Section 15.1, TDD-01 Journey J5 Steps 1-2
  */
 
 import { useState, useCallback } from "react";
-import { FolderKanban, Plus } from "lucide-react";
+import { Code2, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useProjectList } from "@/lib/hooks/use-projects";
@@ -37,12 +37,12 @@ export default function ProjectsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <FolderKanban className="h-6 w-6 text-[var(--color-accent)]" />
-          <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">Projects</h1>
+          <Code2 className="h-6 w-6 text-[var(--color-accent)]" />
+          <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">Repositories</h1>
         </div>
         <Button onClick={() => setDialogOpen(true)}>
           <Plus className="h-4 w-4" />
-          New Project
+          Add Repo
         </Button>
       </div>
 
@@ -54,13 +54,13 @@ export default function ProjectsPage() {
         </div>
       ) : projects.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-3 py-20">
-          <FolderKanban className="h-10 w-10 text-[var(--color-text-tertiary)]" />
+          <Code2 className="h-10 w-10 text-[var(--color-text-tertiary)]" />
           <p className="text-sm text-[var(--color-text-secondary)]">
-            No projects yet. Create your first project to get started.
+            No repositories yet. Add a repo to start creating code tasks.
           </p>
           <Button variant="outline" onClick={() => setDialogOpen(true)}>
             <Plus className="h-4 w-4" />
-            Create Project
+            Add Repo
           </Button>
         </div>
       ) : (

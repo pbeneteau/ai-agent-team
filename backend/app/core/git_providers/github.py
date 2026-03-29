@@ -97,6 +97,19 @@ class GitHubClient:
 
         return repos
 
+    async def get_readme(self, owner: str, repo: str) -> str | None:
+        """Fetch the README content from the repository. Returns None if not found."""
+        resp = await self._client.get(
+            f"/repos/{owner}/{repo}/readme",
+            headers={"Accept": "application/vnd.github.raw+json"},
+        )
+        if resp.status_code == 404:
+            return None
+        if resp.status_code != 200:
+            logger.warning("Failed to fetch README for %s/%s: %s", owner, repo, resp.status_code)
+            return None
+        return resp.text
+
     async def create_webhook(
         self,
         owner: str,

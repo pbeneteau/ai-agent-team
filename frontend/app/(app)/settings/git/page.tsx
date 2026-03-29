@@ -43,7 +43,7 @@ export default function GitSettingsPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <p className="text-sm text-[var(--color-text-secondary)]">Connect your Git providers to enable code artifacts.</p>
+        <p className="text-sm text-[var(--color-text-secondary)]">Connect GitHub or GitLab to push code to PRs and receive webhook-driven iterations.</p>
         <Button onClick={() => setAddOpen(true)}><Plus className="h-4 w-4" /> Connect</Button>
       </div>
 
@@ -179,7 +179,9 @@ function AddConnectionDialog({ open, onOpenChange }: { open: boolean; onOpenChan
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Connect Git Provider</DialogTitle>
-          <DialogDescription>Add a GitHub or GitLab PAT to enable code artifacts.</DialogDescription>
+          <DialogDescription>
+            Add a fine-grained PAT with <strong>Contents</strong> (read+write) and <strong>Pull requests</strong> (read+write) permissions. Add <strong>Webhooks</strong> (read+write) for PR comment iteration.
+          </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
           <div className="space-y-2">

@@ -28,6 +28,10 @@ class Project(Base):
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    primary_language: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    framework: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    package_manager: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    git_repo_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     brief_draft: Mapped[str | None] = mapped_column(Text, nullable=True)
     brief_published: Mapped[str | None] = mapped_column(Text, nullable=True)
     brief_fingerprint: Mapped[str | None] = mapped_column(

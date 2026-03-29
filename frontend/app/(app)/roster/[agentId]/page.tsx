@@ -34,7 +34,7 @@ export default function AgentDetailPage() {
           href="/roster"
           className="inline-flex items-center gap-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
         >
-          <ArrowLeft className="h-3 w-3" /> Roster
+          <ArrowLeft className="h-3 w-3" /> Team
         </Link>
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">{agent.name}</h1>

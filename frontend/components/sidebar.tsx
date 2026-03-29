@@ -11,7 +11,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { FolderKanban, Users, Settings, ChevronLeft, ChevronRight, Zap } from "lucide-react";
+import { Code2, Users, Settings, ChevronLeft, ChevronRight, Terminal } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useUIStore } from "@/lib/stores/ui-store";
 
@@ -22,8 +22,8 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-  { label: "Projects", href: "/projects", icon: FolderKanban },
-  { label: "Agency Roster", href: "/roster", icon: Users },
+  { label: "Repos", href: "/projects", icon: Code2 },
+  { label: "Team", href: "/roster", icon: Users },
   { label: "Settings", href: "/settings", icon: Settings },
 ];
 
@@ -45,10 +45,10 @@ export function Sidebar() {
     >
       {/* Logo / Brand */}
       <div className="flex h-14 items-center gap-2 border-b border-[var(--color-border-primary)] px-4">
-        <Zap className="h-5 w-5 shrink-0 text-[var(--color-accent)]" />
+        <Terminal className="h-5 w-5 shrink-0 text-[var(--color-accent)]" />
         {!isIconOnly && (
           <span className="hidden truncate text-sm font-semibold text-[var(--color-text-primary)] lg:block">
-            Agent Team
+            Code Factory
           </span>
         )}
       </div>

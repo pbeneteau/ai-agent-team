@@ -107,7 +107,7 @@ export function RosterPreview({ agents, onConfirm, isPending }: RosterPreviewPro
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">Your AI Agency</h2>
+          <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">Your Engineering Team</h2>
           <p className="text-sm text-[var(--color-text-secondary)]">
             {visibleAgents.length} agents generated. Rename, adjust, add, or remove as needed.
           </p>
@@ -188,9 +188,24 @@ export function RosterPreview({ agents, onConfirm, isPending }: RosterPreviewPro
                     <p className="text-sm font-medium text-[var(--color-text-primary)] truncate">
                       {agent.name}
                     </p>
-                    <Badge variant="secondary" className="mt-1">
-                      {agent.specialization}
-                    </Badge>
+                    <div className="mt-1 flex items-center gap-1.5">
+                      {(() => {
+                        const original = agents.find((a) => a.id === agent.id);
+                        const role = original?.role;
+                        return role === "lead" ? (
+                          <Badge variant="outline" className="text-[10px] border-[var(--color-accent)] text-[var(--color-accent)]">
+                            Lead
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className="text-[10px]">
+                            Worker
+                          </Badge>
+                        );
+                      })()}
+                      <Badge variant="secondary">
+                        {agent.specialization}
+                      </Badge>
+                    </div>
                     {agent.description && (
                       <p className="mt-1.5 text-xs text-[var(--color-text-secondary)] line-clamp-2">
                         {agent.description}
@@ -216,10 +231,10 @@ export function RosterPreview({ agents, onConfirm, isPending }: RosterPreviewPro
         {isPending ? (
           <>
             <Loader2 className="animate-spin" />
-            Confirming roster...
+            Confirming team...
           </>
         ) : (
-          `Confirm Roster (${visibleAgents.length} agents)`
+          `Confirm Team (${visibleAgents.length} agents)`
         )}
       </Button>
     </div>

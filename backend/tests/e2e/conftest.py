@@ -230,6 +230,10 @@ def make_project(
     project.workspace_id = workspace_id
     project.name = name
     project.description = "Test project description"
+    project.primary_language = None
+    project.framework = None
+    project.package_manager = None
+    project.git_repo_url = None
     project.brief_draft = None
     project.brief_published = brief_published
     project.brief_fingerprint = None

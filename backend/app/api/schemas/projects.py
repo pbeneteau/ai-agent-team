@@ -16,6 +16,9 @@ class ProjectListItem(BaseModel):
     id: str
     name: str
     description: str | None = None
+    primary_language: str | None = None
+    framework: str | None = None
+    git_repo_url: str | None = None
     artifact_count: int = 0
     brief_status: str = "none"  # "none", "draft", "published"
     created_at: datetime
@@ -25,6 +28,11 @@ class ProjectDetail(BaseModel):
     id: str
     name: str
     description: str | None = None
+    primary_language: str | None = None
+    framework: str | None = None
+    package_manager: str | None = None
+    git_repo_url: str | None = None
+    has_readme: bool = False
     artifact_count: int = 0
     brief_status: str = "none"  # "none" | "draft" | "published"
     brief_draft: str | None = None
@@ -38,11 +46,20 @@ class ProjectDetail(BaseModel):
 class CreateProjectRequest(BaseModel):
     name: str
     description: str | None = None
+    primary_language: str | None = None
+    framework: str | None = None
+    package_manager: str | None = None
+    git_repo_url: str | None = None
+    git_connection_id: str | None = None
 
 
 class UpdateProjectRequest(BaseModel):
     name: str | None = None
     description: str | None = None
+    primary_language: str | None = None
+    framework: str | None = None
+    package_manager: str | None = None
+    git_repo_url: str | None = None
 
 
 # ---------------------------------------------------------------------------

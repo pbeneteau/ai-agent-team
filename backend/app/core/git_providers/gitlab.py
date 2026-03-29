@@ -68,6 +68,29 @@ class GitLabClient:
             rate_limit_remaining=None,
         )
 
+    async def get_readme(self, owner: str, repo: str) -> str | None:
+        """Fetch the README content from the repository. Returns None if not found."""
+        import urllib.parse
+        project_path = urllib.parse.quote(f"{owner}/{repo}", safe="")
+        resp = await self._client.get(
+            f"/projects/{project_path}/repository/files/README.md/raw",
+            params={"ref": "main"},
+        )
+        if resp.status_code == 404:
+            # Try README.rst, README.txt
+            for alt in ("README.rst", "README.txt", "README"):
+                resp = await self._client.get(
+                    f"/projects/{project_path}/repository/files/{alt}/raw",
+                    params={"ref": "main"},
+                )
+                if resp.status_code == 200:
+                    return resp.text
+            return None
+        if resp.status_code != 200:
+            logger.warning("Failed to fetch README for %s/%s: %s", owner, repo, resp.status_code)
+            return None
+        return resp.text
+
     async def list_repos(self) -> list[RepoInfo]:
         """List projects accessible via this PAT (up to 100)."""
         repos: list[RepoInfo] = []

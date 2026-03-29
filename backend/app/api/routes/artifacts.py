@@ -708,6 +708,9 @@ async def list_project_artifacts(
                 status=a.status,
                 total_cost_usd=float(a.total_cost_usd),
                 current_version=a.current_version,
+                git_feature_branch=a.git_feature_branch,
+                git_pr_url=a.git_pr_url,
+                git_pr_number=a.git_pr_number,
                 created_at=a.created_at,
                 updated_at=a.updated_at,
             )

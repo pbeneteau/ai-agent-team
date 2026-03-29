@@ -51,17 +51,6 @@ export function ArtifactActions({ artifactId, artifactType }: ArtifactActionsPro
   return (
     <>
       <div className="flex items-center gap-2">
-        {/* Prose artifacts have an in-app Approve button; code artifacts approve via PR merge */}
-        {artifactType === "prose" && (
-          <Button onClick={handleApprove} disabled={approveArtifact.isPending}>
-            {approveArtifact.isPending ? (
-              <Loader2 className="animate-spin" />
-            ) : (
-              <CheckCircle className="h-4 w-4" />
-            )}
-            Approve
-          </Button>
-        )}
         <Button variant="outline" onClick={() => setShowCancelDialog(true)}>
           <XCircle className="h-4 w-4" />
           Cancel
@@ -73,10 +62,10 @@ export function ArtifactActions({ artifactId, artifactType }: ArtifactActionsPro
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <AlertCircle className="h-5 w-5 text-[var(--color-danger)]" />
-              Cancel Artifact
+              Cancel Task
             </DialogTitle>
             <DialogDescription>
-              Are you sure? This artifact will be permanently cancelled.
+              Are you sure? This task will be permanently cancelled.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

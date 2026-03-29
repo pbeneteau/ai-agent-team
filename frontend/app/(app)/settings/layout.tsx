@@ -10,8 +10,8 @@ import { Settings, GitBranch, Plug, BarChart3, Building2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const tabs = [
-  { label: "Workspace", href: "/settings/workspace", icon: Building2 },
-  { label: "Git Providers", href: "/settings/git", icon: GitBranch },
+  { label: "Git", href: "/settings/git", icon: GitBranch },
+  { label: "Defaults", href: "/settings/workspace", icon: Building2 },
   { label: "MCP", href: "/settings/mcp", icon: Plug },
   { label: "Usage", href: "/settings/usage", icon: BarChart3 },
 ];
