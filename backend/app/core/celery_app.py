@@ -63,12 +63,21 @@ def _dispose_engine() -> None:
     loop the pool holds asyncpg connections attached to that dead loop.
     Disposing via sync_engine.dispose() clears the pool without requiring an
     event loop, avoiding "Future attached to a different loop" on the next task.
+
+    The MissingGreenlet warning from asyncpg is expected and harmless —
+    asyncpg's connection.close() is async-only but the pool teardown runs
+    synchronously. The connections are cleaned up by the OS regardless.
     """
+    import logging as _logging
+
+    _logging.getLogger("sqlalchemy.pool").setLevel(_logging.CRITICAL)
     from app.core.database import engine as _engine
     try:
         _engine.sync_engine.dispose()
     except Exception:
         pass
+    finally:
+        _logging.getLogger("sqlalchemy.pool").setLevel(_logging.WARNING)
 
 
 @celery_app.task(

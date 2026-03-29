@@ -35,9 +35,9 @@ function ProfileTab({ agent }: { agent: AgentDetail }) {
   const deleteAgent = useDeleteAgent();
   const triggerReflection = useTriggerReflection(agent.id);
 
-  const [name, setName] = useState(agent.name);
-  const [specialization, setSpecialization] = useState(agent.specialization);
-  const [description, setDescription] = useState(agent.description);
+  const [name, setName] = useState(agent.name ?? "");
+  const [specialization, setSpecialization] = useState(agent.specialization ?? "");
+  const [description, setDescription] = useState(agent.description ?? "");
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [deleteConfirmName, setDeleteConfirmName] = useState("");
 
