@@ -1,33 +1,38 @@
-# AI Agent Team Orchestrator
+# AI Agent Team — Code Factory
 
-> *You write the brief. We deliver the work. You review the diff.*
+> *You write the brief. We deliver the code. You review the diff.*
 
-An AI-powered autonomous agency for knowledge work and code. Describe what you need in a structured brief, a cross-functional team of specialized AI agents collaborates to produce the deliverable, and you review and iterate on the output through version-controlled diffs.
+An AI-powered autonomous code factory. Write a brief describing what you need, a cross-functional team of specialized AI agents (leads + workers) collaborates to produce the code, and you review and iterate through version-controlled diffs and GitHub/GitLab PRs.
 
 ## How It Works
 
 ```
-Brief ──> Sufficiency Check ──> DAG Routing ──> Parallel Agent Execution ──> Review ──> Iterate ──> Approve
+Brief ──> Sufficiency Check ──> DAG Routing ──> Leads Plan ──> [Validate] ──> Workers Execute ──> Leads Review ──> Iterate ──> Approve
 ```
 
-1. **Write a Smart Brief** — describe the deliverable (goal, audience, context, constraints)
+1. **Write a Smart Brief** — describe the code you need (goal, tech stack, constraints)
 2. **Validate** — AI checks if the brief is complete enough to produce quality output
-3. **Delegate** — system selects the right DAG template, assembles a team from your roster, estimates cost
-4. **Execute** — agents work in parallel waves, each building on the output of the previous wave
-5. **Review** — see the output, sources, assumptions, and cost. View diffs between versions.
-6. **Iterate** — highlight text, leave a comment, agents rewrite just that section
-7. **Approve** — agents reflect on the work and accumulate learnings for next time
+3. **Delegate** — system selects the right DAG template, assembles leads + workers from your roster
+4. **Plan** — lead agents analyze the brief and produce a structured delegation plan
+5. **Execute** — worker agents implement in parallel, building on the delegation plan
+6. **Review** — lead agents grade against template-specific criteria, run code via `code_exec`
+7. **Iterate** — leads REVISE with per-specialist feedback, or MINOR_FIX directly
+8. **Approve** — agents reflect on the work and accumulate learnings for next time
 
 ## Key Features
 
-- **Multi-agent collaboration** — specialized agents (product, design, engineering, QA) work cross-functionally via DAG-based execution
-- **5 DAG templates** — `code_feature`, `content_research`, `simple_prose`, `code_bugfix`, `multi_research`
+- **Lead-guided execution** — leads plan and review, workers execute. APPROVE / MINOR_FIX / REVISE decisions with per-specialist feedback
+- **13 code-focused DAG templates** — `full_feature`, `backend_feature`, `frontend_feature`, `bug_fix`, `refactor`, `security_fix`, `performance`, `infra_devops`, `mobile_feature`, `data_feature`, `api_integration`, `architecture`, `design_system`
+- **Template-specific grading** — review leads grade against numbered PASS/FAIL criteria per template, with anti-rationalization prompts
+- **Code execution in review** — `code_exec` tool lets review leads run tests, lint, and build in a sandboxed temp dir
+- **Delegation validation** — optional validation wave catches vague delegation plans before workers waste tokens (on complex templates)
+- **Context management** — mid-loop Haiku summarization at 60K tokens, upstream truncation (47/53 middle-out), memory compaction
 - **Persistent agent roster** — agents accumulate skills and learnings across executions, improving over time
-- **Artifact versioning** — immutable versions with prose diffs (in-app) and code diffs (GitHub/GitLab PRs)
-- **Contextual iteration** — highlight text, leave a comment, agents rewrite only what you flagged
 - **GitHub/GitLab integration** — code artifacts auto-push to PR branches, webhook-driven iteration from PR comments
+- **Execution telemetry** — structured JSON metrics for tool iterations, token peaks, review decisions, compaction frequency
 - **Cost controls** — per-artifact and monthly budget ceilings with hard circuit breakers
 - **MCP support** — connect external tool servers for agent use during execution
+- **All constants tunable** — 12 agent parameters configurable via env vars without code changes
 
 ## Tech Stack
 
@@ -106,9 +111,10 @@ ai-agent-team/
 │   │   ├── main.py                # FastAPI app, CORS, lifespan, error handlers
 │   │   ├── agents/                # AI engine
 │   │   │   ├── anthropic_runner.py    # Core agent execution loop
-│   │   │   ├── orchestrator.py        # DAG orchestrator (execute_artifact_dag)
+│   │   │   ├── orchestrator.py        # Lead-guided DAG orchestrator
+│   │   │   ├── telemetry.py          # Structured JSON execution metrics
 │   │   │   ├── router.py             # Haiku-powered DAG routing + agent assembly
-│   │   │   ├── prompt_builder.py      # 9-position prompt architecture
+│   │   │   ├── prompt_builder.py      # 9-position prompt + review criteria
 │   │   │   ├── memory.py             # Agent skill/learning loader + compaction
 │   │   │   ├── upstream.py           # Cross-wave context builder
 │   │   │   ├── sufficiency.py        # Brief validation (Sonnet)
@@ -117,12 +123,12 @@ ai-agent-team/
 │   │   │   ├── briefing.py           # Project context distribution
 │   │   │   ├── readiness.py          # Heuristic readiness scoring
 │   │   │   ├── document_processor.py  # PDF/DOCX/text extraction + chunking
-│   │   │   └── dag_templates/        # 5 MVP execution templates
+│   │   │   └── dag_templates/        # 13 lead-guided code templates
 │   │   ├── api/
-│   │   │   ├── routes/            # 10 route files, 44 endpoints
-│   │   │   ├── schemas/           # Pydantic request/response models
+│   │   │   ├── routes/            # 11 route files, 49 endpoints
+│   │   │   ├── schemas/           # 8 files: Pydantic request/response models
 │   │   │   └── websocket_manager.py   # Real-time event broadcasting
-│   │   ├── config/settings.py     # Pydantic Settings (env-driven)
+│   │   ├── config/settings.py     # Pydantic Settings (env-driven, 12 tunable agent params)
 │   │   ├── core/                  # Infrastructure services
 │   │   │   ├── database.py            # Async SQLAlchemy engine + sessions
 │   │   │   ├── celery_app.py          # Celery + Redis configuration
@@ -137,11 +143,12 @@ ai-agent-team/
 │   │   │   ├── reaper.py             # Orphaned wave cleanup
 │   │   │   └── billing.py            # Monthly budget reset
 │   │   ├── models/                # 12 SQLAlchemy models + enums
-│   │   └── tools/                 # 7 agent tools
-│   ├── alembic/versions/          # 8 migrations (FK-dependency order)
+│   │   └── tools/                 # 8 agent tools (incl. code_exec for review)
+│   ├── alembic/versions/          # 10 migrations (FK-dependency order)
+│   ├── scripts/                   # analyze_telemetry.py (tuning report from logs)
 │   └── tests/
-│       ├── e2e/                   # 78 end-to-end tests
-│       └── *.py                   # Unit + integration tests
+│       ├── e2e/                   # End-to-end tests
+│       └── *.py                   # 760 unit + integration tests
 ├── frontend/
 │   ├── app/                       # Next.js App Router
 │   │   ├── (app)/                     # Main app (projects, roster, settings)
@@ -210,24 +217,40 @@ workspaces
 Smart Brief ──> Sufficiency Check (Sonnet)
                      │
                      ▼
-              DAG Router (Haiku) ──> selects template + maps agents
+              DAG Router (Haiku) ──> selects template + maps leads/workers
                      │
                      ▼
-            ┌── Wave 1 ──────────────────┐
-            │  Slot A ─┐                 │
-            │  Slot B ─┤ asyncio.gather  │
-            │  Slot C ─┘                 │
-            └────────────┬───────────────┘
-                         │ upstream context
-                         ▼
-            ┌── Wave 2 ──────────────────┐
-            │  Slot D (depends on A, B)  │
+            ┌── Planning ────────────────┐
+            │  Lead A ─┐                 │  Leads analyze brief,
+            │  Lead B ─┘ asyncio.gather  │  produce delegation plan
             └────────────┬───────────────┘
                          │
-                         ▼
+                         ▼ (optional, complex templates)
+            ┌── Validation ──────────────┐
+            │  Lead validates delegation │  APPROVED → continue
+            │  plan specificity          │  REVISE → re-plan (1x)
+            └────────────┬───────────────┘
+                         │
+          ┌──────────────▼──────────────────────────┐
+          │  EXECUTION + REVIEW LOOP (max N iters)  │
+          │                                         │
+          │  ┌── Execution ──────────────────┐      │
+          │  │  Worker A ─┐                  │      │
+          │  │  Worker B ─┘ asyncio.gather   │      │
+          │  └────────────┬──────────────────┘      │
+          │               ▼                         │
+          │  ┌── Review ─────────────────────┐      │
+          │  │  Lead grades via criteria +   │      │
+          │  │  code_exec (run tests/lint)   │      │
+          │  │  → APPROVE / MINOR_FIX / REVISE      │
+          │  └────────────┬──────────────────┘      │
+          │               │ REVISE → loop back      │
+          └───────────────┼─────────────────────────┘
+                          │ APPROVE or MINOR_FIX
+                          ▼
               Upload to S3 ──> Create ArtifactVersion
-                         │
-                         ▼ (if code artifact)
+                          │
+                          ▼
               Git Push ──> Create PR
 ```
 
@@ -261,7 +284,7 @@ pytest tests/e2e/ -v
 cd frontend && pnpm build
 ```
 
-78 E2E tests covering all 6 user journeys and all edge cases from the PRD.
+760 backend tests + 46 Playwright E2E tests. GitHub Actions CI runs on every push.
 
 ## Documentation
 
@@ -270,10 +293,10 @@ cd frontend && pnpm build
 | `docs/VISION_2.0.md` | Product vision and strategic context |
 | `docs/TDD/01_PRD_AND_WORKFLOWS.md` | User personas, 6 journeys, state machine, edge cases |
 | `docs/TDD/02_BACKEND_ARCHITECTURE_TDD.md` | 12 tables, S3 layout, Celery tasks, circuit breakers |
-| `docs/TDD/03_AI_AGENT_ENGINE_TDD.md` | Prompts, DAG templates, memory, 7 tools, reflection |
-| `docs/TDD/04_API_AND_INTEGRATIONS_TDD.md` | All 44 endpoint specs with request/response schemas |
+| `docs/TDD/03_AI_AGENT_ENGINE_TDD.md` | Prompts, DAG templates, memory, 8 tools, reflection |
+| `docs/TDD/04_API_AND_INTEGRATIONS_TDD.md` | All 49 endpoint specs with request/response schemas |
 | `docs/TDD/05_FRONTEND_UX_TDD.md` | Design tokens, routes, state management, UX specs |
-| `docs/TDD/06_IMPLEMENTATION_ROADMAP.md` | 49 tickets across 12 sprints |
+| `docs/TDD/06_IMPLEMENTATION_ROADMAP.md` | 74 tickets across 17 sprints |
 
 ## License
 
