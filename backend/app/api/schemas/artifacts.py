@@ -197,6 +197,12 @@ class CancelResponse(BaseModel):
     cancelled_at: datetime
 
 
+class RetryResponse(BaseModel):
+    artifact_id: str
+    execution_wave_id: str
+    status: str
+
+
 # ---------------------------------------------------------------------------
 # Artifact list item (for project listing)
 # ---------------------------------------------------------------------------

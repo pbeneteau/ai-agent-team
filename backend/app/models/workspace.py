@@ -10,6 +10,7 @@ from app.core.database import Base
 
 if TYPE_CHECKING:
     from app.models.agent import Agent
+    from app.models.document import Document
     from app.models.git_provider_connection import GitProviderConnection
     from app.models.mcp_connection import McpConnection
     from app.models.project import Project
@@ -23,7 +24,12 @@ class Workspace(Base):
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     domain_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    product_description: Mapped[str | None] = mapped_column(Text, nullable=True)
     tech_stack: Mapped[str | None] = mapped_column(Text, nullable=True)
+    company_stage: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    target_audience: Mapped[str | None] = mapped_column(Text, nullable=True)
+    main_goals: Mapped[str | None] = mapped_column(Text, nullable=True)
+    existing_team: Mapped[str | None] = mapped_column(Text, nullable=True)
     monthly_budget_usd: Mapped[float] = mapped_column(
         Numeric(10, 2), default=50.00, server_default="50.00"
     )
@@ -45,6 +51,11 @@ class Workspace(Base):
 
     # Relationships
     agents: Mapped[list["Agent"]] = relationship(back_populates="workspace")
+    documents: Mapped[list["Document"]] = relationship(
+        back_populates="workspace",
+        primaryjoin="Document.workspace_id == Workspace.id",
+        cascade="all, delete-orphan",
+    )
     projects: Mapped[list["Project"]] = relationship(back_populates="workspace")
     git_provider_connections: Mapped[list["GitProviderConnection"]] = relationship(
         back_populates="workspace"

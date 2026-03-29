@@ -5,6 +5,8 @@
 > **Source of truth:** `docs/VISION_2.0.md`, `docs/TDD/01_PRD_AND_WORKFLOWS.md`
 > **Scope:** Database schema, storage layers, asynchronous execution engine, and safety mechanisms. No frontend, no prompt engineering, no AI agent logic.
 
+> **Note — code-only scope:** The application is code-focused. All templates produce code artifacts. Prose/content templates are not actively maintained.
+
 ---
 
 ## Architectural Decisions Log
@@ -53,8 +55,13 @@ The top-level tenant container. MVP: one row with a hardcoded ID.
 |---|---|---|---|
 | `id` | `TEXT` | PK | UUID v4 |
 | `name` | `VARCHAR(255)` | NOT NULL | Account/company name |
-| `domain_description` | `TEXT` | | Company description from onboarding (industry, product, goals) |
-| `tech_stack` | `TEXT` | | Tech stack from onboarding (e.g., "Next.js, FastAPI, PostgreSQL") |
+| `domain_description` | `TEXT` | | Industry / domain description |
+| `product_description` | `TEXT` | | What the product does and the problem it solves |
+| `tech_stack` | `TEXT` | | Tech stack (e.g., "Next.js, FastAPI, PostgreSQL") |
+| `company_stage` | `VARCHAR(50)` | | `"idea"`, `"startup"`, `"growing"`, `"established"` |
+| `target_audience` | `TEXT` | | Who the customers are |
+| `main_goals` | `TEXT` | | What the company wants to accomplish |
+| `existing_team` | `TEXT` | | Current team roles (agents fill the gaps) |
 | `monthly_budget_usd` | `NUMERIC(10,2)` | DEFAULT 50.00 | Account-level monthly spending ceiling |
 | `monthly_spend_usd` | `NUMERIC(10,2)` | DEFAULT 0.00 | Running total for the current billing period |
 | `billing_period_start` | `TIMESTAMPTZ` | | Start of current billing period (resets monthly) |
@@ -74,6 +81,7 @@ Persistent AI entities that live in the workspace roster.
 |---|---|---|---|
 | `id` | `TEXT` | PK | UUID v4 |
 | `workspace_id` | `TEXT` | FK → `workspaces.id`, NOT NULL | Tenant isolation |
+| `role` | `VARCHAR(20)` | NOT NULL, DEFAULT 'worker' | Enum: `lead`, `worker`. Leads plan, delegate, and review. Workers execute. |
 | `name` | `VARCHAR(255)` | NOT NULL | Display name (e.g., "Content Writer") |
 | `specialization` | `VARCHAR(500)` | NOT NULL | Role description (e.g., "Technical documentation specialist") |
 | `description` | `TEXT` | | Longer description of the agent's focus and capabilities |
@@ -103,6 +111,8 @@ Persistent AI entities that live in the workspace roster.
 **Progression rules (application-level):**
 - `apprenti` → `opérationnel`: `completed_artifacts >= 5`
 - `opérationnel` → `expert`: `completed_artifacts >= 20` AND `avg_quality_score >= 4.0`
+
+**Role routing rule:** The router only assigns lead-role agents to planning/review slots and worker-role agents to execution slots.
 
 ---
 
@@ -283,12 +293,13 @@ Tracks each DAG execution run. One execution wave = one orchestrator Celery task
 
 #### `documents`
 
-User-uploaded files for project context.
+User-uploaded files for project or workspace context. A document belongs to either a project (project-scoped context) or a workspace (global context available to all agents).
 
 | Column | Type | Constraints | Description |
 |---|---|---|---|
 | `id` | `TEXT` | PK | UUID v4 |
-| `project_id` | `TEXT` | FK → `projects.id` ON DELETE CASCADE, NOT NULL | |
+| `project_id` | `TEXT` | FK → `projects.id` ON DELETE CASCADE, nullable | Set for project-scoped documents |
+| `workspace_id` | `TEXT` | FK → `workspaces.id` ON DELETE CASCADE, nullable | Set for workspace-level context documents |
 | `filename` | `VARCHAR(500)` | NOT NULL | Original filename |
 | `mime_type` | `VARCHAR(100)` | NOT NULL | e.g., `application/pdf`, `text/markdown` |
 | `s3_path` | `VARCHAR(1024)` | NOT NULL | Path in S3 bucket |
@@ -297,8 +308,11 @@ User-uploaded files for project context.
 | `processing_status` | `VARCHAR(15)` | DEFAULT 'pending' | Enum: `pending`, `processing`, `ready`, `failed` |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT NOW() | |
 
+Exactly one of `project_id` or `workspace_id` is set per row.
+
 **Indexes:**
 - `ix_documents_project_id` on `(project_id)`
+- `ix_documents_workspace_id` on `(workspace_id)`
 
 ---
 
@@ -324,7 +338,7 @@ Chunked + embedded document content for semantic search (pgvector).
 
 #### `git_provider_connections`
 
-GitHub/GitLab OAuth connections.
+GitHub/GitLab PAT-based connections (AD-14: PAT only, no OAuth for MVP).
 
 | Column | Type | Constraints | Description |
 |---|---|---|---|
@@ -374,13 +388,14 @@ Model Context Protocol server connections.
 erDiagram
     workspaces ||--o{ agents : "has roster of"
     workspaces ||--o{ projects : "contains"
+    workspaces ||--o{ documents : "stores (workspace-level)"
     workspaces ||--o{ git_provider_connections : "configures"
     workspaces ||--o{ mcp_connections : "configures"
 
     agents ||--o{ agent_skills : "accumulates"
 
     projects ||--o{ artifacts : "contains"
-    projects ||--o{ documents : "stores"
+    projects ||--o{ documents : "stores (project-level)"
 
     artifacts ||--o{ artifact_versions : "versions"
     artifacts ||--o{ execution_waves : "executed by"
@@ -399,13 +414,13 @@ erDiagram
 
 ### 2.1 What Gets Embedded
 
-**Only uploaded project documents.** Agent skills and work learnings are injected directly into the LLM prompt (within the 5k-8k token identity budget) and do not need semantic search.
+**Uploaded project and workspace documents.** Agent skills and work learnings are injected directly into the LLM prompt (within the 5k-8k token identity budget) and do not need semantic search. Documents uploaded to a project are project-scoped; documents uploaded to the workspace (e.g., brand guidelines, company playbooks) are workspace-scoped and available to all agents across all projects.
 
 ### 2.2 Embedding Model
 
 | Setting | Value | Rationale |
 |---|---|---|
-| **Model** | `voyage-3-lite` (or Anthropic's embedding endpoint when available) | Good quality/cost ratio for document retrieval |
+| **Model** | `voyage-2` (Voyage AI embedding API) | Good quality/cost ratio for document retrieval |
 | **Dimensions** | 1024 | Sufficient for document-level similarity |
 | **Max chunk size** | 512 tokens | Balances retrieval granularity with context coherence |
 | **Chunk overlap** | 50 tokens | Prevents losing context at chunk boundaries |
@@ -414,29 +429,35 @@ The embedding model is a configurable setting — if Anthropic ships a native em
 
 ### 2.3 Chunking Strategy
 
-1. **Receive uploaded file** → extract raw text (PDF via `pymupdf`/`pdfplumber`, DOCX via `python-docx`, plain text as-is).
-2. **Split into chunks** using a recursive text splitter (LangChain's `RecursiveCharacterTextSplitter` or equivalent): split on `\n\n`, then `\n`, then sentence boundary, then word boundary. Target: 512 tokens per chunk, 50 token overlap.
-3. **Compute embeddings** for each chunk via the embedding API.
-4. **Insert** `document_chunks` rows with the embedding vector.
-5. **Update** `documents.chunk_count` and `documents.processing_status = 'ready'`.
+1. **Receive uploaded file** → extract raw text (PDF via `pymupdf`/`fitz`, DOCX via `python-docx`, plain text/markdown/CSV/JSON/YAML as UTF-8 decode).
+2. **Tokenize** the full text using `tiktoken` (`cl100k_base` encoding).
+3. **Slide a window** over the token array: chunk size 512 tokens, overlap 50 tokens. Each window is decoded back to a string chunk.
+4. **Compute embeddings** for each chunk via the Voyage AI API (`voyage-2` model). Falls back to zero vectors (1024 dims) when `VOYAGE_API_KEY` is unset.
+5. **Insert** `document_chunks` rows with the embedding vector.
+6. **Update** `documents.chunk_count` and `documents.processing_status = 'ready'`.
+
+This runs as a **Celery task** (`process_document_upload`) triggered on file upload.
 
 This runs as a **Celery task** (`process_document_upload`) triggered on file upload.
 
 ### 2.4 Retrieval Query
 
-During agent execution, when an agent needs project context from uploaded documents:
+During agent execution (and learning), when an agent needs context from uploaded documents.
+The query searches **both** project-scoped documents and workspace-level documents in one call:
 
 ```sql
 SELECT dc.content, dc.chunk_index, d.filename
 FROM document_chunks dc
 JOIN documents d ON d.id = dc.document_id
-WHERE d.project_id = :project_id
+WHERE (d.project_id = :project_id OR d.workspace_id = :workspace_id)
   AND d.processing_status = 'ready'
 ORDER BY dc.embedding <=> :query_embedding
 LIMIT :top_k;
 ```
 
-`<=>` is pgvector's cosine distance operator. Default `top_k = 10`.
+During the **learning phase**, only `workspace_id` is set (no `project_id`), so only workspace-level documents are searched. During the **execution phase**, both are set and the `OR` includes both scopes.
+
+`<=>` is pgvector's cosine distance operator. Default `top_k = 5`, max `15`.
 
 ### 2.5 Index Strategy
 
@@ -490,18 +511,36 @@ The single orchestrator task. One instance = one complete DAG execution producin
 ```
 Task: execute_artifact_dag(execution_wave_id: str)
 
-Lifecycle:
+Lifecycle — lead-guided execution:
 1. Load ExecutionWave from DB (includes dag_plan, assembled_team)
 2. Set status = 'running', started_at = now()
-3. For each wave in dag_plan.waves (sequentially):
+
+Phase A — Planning waves (run once):
+3. For each wave where wave_type = 'planning' (sequentially):
    a. Update current_step (for heartbeat UI)
-   b. Load agents assigned to this wave
-   c. For each agent: build prompt (system + skills + upstream outputs + brief)
-   d. Run all agents in the wave concurrently via asyncio.gather()
-   e. Collect outputs, accumulate token counts
-   f. Check cost against artifact.max_budget_usd → abort if exceeded
-   g. Store wave outputs in memory (passed as context to downstream waves)
-4. Compile final output (merge all agent contributions into files)
+   b. Load lead agents assigned to this wave
+   c. Build prompt (system + skills + brief); leads analyze the brief and produce delegation plans
+   d. Run all planning agents concurrently via asyncio.gather()
+   e. Store delegation plan outputs in memory (keyed by output_key)
+   f. Accumulate token counts; check cost circuit breaker
+
+Phase B — Execution + Review loop (up to max_iterations):
+4. For iteration = 1 to dag_plan.max_iterations:
+   a. Execution waves (wave_type = 'execution'):
+      - Load worker agents for each slot
+      - Inject delegation plan from planning wave as context
+      - If iteration > 1: inject per-specialist feedback from the previous review
+      - Run all worker agents concurrently; collect file outputs
+   b. Review wave (wave_type = 'review'):
+      - Load lead agent(s) for the review slot
+      - Lead reviews all produced files and returns one of:
+          APPROVE   → exit loop, proceed to upload
+          MINOR_FIX → lead applies fixes directly via file_write, then proceed to upload
+          REVISE    → extract per-specialist feedback, increment iteration counter
+      - If iteration == max_iterations and decision is REVISE:
+          Force-finalize with current outputs (no further revision)
+
+Phase C — Finalization:
 5. Upload files to S3 at artifacts/{artifact_id}/v{version}/{filepath}
 6. Create ArtifactVersion row (file_manifest, token costs, assumptions, sources)
 7. Update Artifact.status = 'in_review', Artifact.current_version += 1
@@ -510,7 +549,7 @@ Lifecycle:
 10. Update Workspace.monthly_spend_usd (atomic increment)
 
 Error handling:
-- LLM API error → retry the specific agent call up to 3 times (exponential backoff: 5s, 15s, 45s)
+- LLM API error → retry the specific agent slot up to 3 times (exponential backoff: 2s, 4s, 8s)
 - All retries exhausted → ExecutionWave.status = 'failed', ExecutionWave.error_message = reason
 - Artifact.status remains 'drafting' with the error surfaced to the user
 - Cost ceiling hit → ExecutionWave.status = 'failed', error = 'budget_exceeded'
@@ -572,50 +611,74 @@ The `dag_plan` column on `execution_waves` stores the wave structure:
 
 ```json
 {
+  "template_id": "full_feature",
+  "needs_compile": false,
+  "max_iterations": 3,
   "waves": [
     {
       "wave_number": 1,
-      "label": "Researching competitors",
+      "label": "PM & Design leads planning",
+      "wave_type": "planning",
       "agents": [
         {
-          "agent_id": "uuid-research-analyst",
-          "role_in_wave": "Research competitor pricing, features, reviews",
-          "output_key": "research_data"
-        },
-        {
-          "agent_id": "uuid-product-expert",
-          "role_in_wave": "Define analysis framework and key dimensions",
-          "output_key": "analysis_framework"
+          "agent_id": "uuid-...",
+          "role_in_wave": "Analyze the brief and produce a delegation plan for the team",
+          "output_key": "pm_plan",
+          "label": "PM Lead Planning",
+          "is_lead": true,
+          "suggested_specializations": ["Product Manager", "PM"],
+          "depends_on": []
         }
       ]
     },
     {
       "wave_number": 2,
-      "label": "Drafting analysis",
+      "label": "Backend & Frontend building",
+      "wave_type": "execution",
       "agents": [
         {
-          "agent_id": "uuid-strategy-analyst",
-          "role_in_wave": "Write the competitive analysis using research data and framework",
-          "output_key": "draft_report",
-          "depends_on": ["research_data", "analysis_framework"]
+          "agent_id": "uuid-...",
+          "role_in_wave": "Implement backend endpoints per the delegation plan",
+          "output_key": "backend_code",
+          "label": "Backend Engineer",
+          "is_lead": false,
+          "suggested_specializations": ["Backend Engineer", "Python Developer"],
+          "depends_on": ["pm_plan"]
         }
       ]
     },
     {
       "wave_number": 3,
-      "label": "QA & compilation",
+      "label": "Tech Lead review",
+      "wave_type": "review",
       "agents": [
         {
-          "agent_id": "uuid-qa-engineer",
-          "role_in_wave": "Review for clarity, consistency, missing gaps",
-          "output_key": "final_report",
-          "depends_on": ["draft_report"]
+          "agent_id": "uuid-...",
+          "role_in_wave": "Review all produced code and decide APPROVE / MINOR_FIX / REVISE",
+          "output_key": "review_decision",
+          "label": "Tech Lead Review",
+          "is_lead": true,
+          "suggested_specializations": ["Tech Lead", "Senior Engineer"],
+          "depends_on": ["backend_code"]
         }
       ]
     }
   ]
 }
 ```
+
+**Top-level fields:**
+- `template_id` (string): Which DAG template was selected by the router.
+- `needs_compile` (bool): Whether a compilation step is needed before review.
+- `max_iterations` (int): Max review-revise cycles before force-finalizing.
+
+**Per-wave fields:**
+- `wave_type` (`"planning"` | `"execution"` | `"review"`): Governs how the orchestrator handles the wave's outputs.
+
+**Per-agent slot fields:**
+- `label` (string): Human-readable slot name shown in the heartbeat UI.
+- `is_lead` (bool): If true, only lead-role agents are eligible for this slot.
+- `suggested_specializations` (list of strings): Hints used by the router when matching agents from the roster to slots.
 
 **Context flow:** After each wave completes, the outputs (keyed by `output_key`) are stored in an in-memory dictionary. Downstream agents receive upstream outputs via `depends_on` references — these are injected into their prompt as context.
 
@@ -647,7 +710,21 @@ The frontend polls `GET /api/artifacts/{id}/status` which reads from this row:
 }
 ```
 
-Polling interval: **3 seconds** (configurable). No WebSockets needed for MVP — the heartbeat data is tiny and changes infrequently (once per wave, typically every 30-120 seconds).
+Polling interval: **3 seconds** (configurable). Additionally, the backend broadcasts real-time WebSocket events (see Section 3.5) so the frontend can use either polling or push depending on what it needs.
+
+### 3.5 WebSocket Events
+
+The backend runs a full WebSocket manager (`app/api/websocket_manager.py`). Clients connect to `GET /api/ws` and receive JSON messages of the form `{"type": "<event_type>", "payload": {...}}`.
+
+| Event type | Payload | When emitted |
+|---|---|---|
+| `artifact.status_changed` | `{artifact_id, status, project_id}` | Artifact transitions to `in_review`, `approved`, or `cancelled` |
+| `agent.status_changed` | `{agent_id, status, readiness_score}` | Agent status changes (e.g., `working → ready`) |
+| `execution.wave_completed` | `{artifact_id, wave_number, total_waves}` | Each DAG wave finishes |
+| `execution.failed` | `{artifact_id, error_message}` | Wave fails after exhausting retries |
+| `budget.warning` | `{usage_pct, remaining_usd}` | Monthly budget exceeds warning threshold |
+
+Broadcast helpers (`broadcast_artifact_status_changed`, `broadcast_wave_completed`, etc.) are called from the orchestrator and route handlers. Connections are managed in a global `WebSocketManager` singleton using an asyncio lock for thread safety.
 
 ---
 
@@ -707,7 +784,7 @@ To reconstruct a full S3 key: `s3_prefix + file_manifest[i]`.
 | **Cancelled artifacts** | Retained for 30 days after cancellation, then purged (S3 lifecycle rule on prefix). |
 | **Hard-deleted artifacts** | S3 objects deleted immediately when the user hard-deletes. |
 | **Uploaded documents** | Retained as long as the project exists. Deleted when the document is deleted or the project is hard-deleted. |
-| **Orphaned S3 objects** | Weekly background job compares S3 prefixes against `artifact_versions.s3_prefix` and `documents.s3_path`. Deletes objects with no matching DB row. |
+| **Orphaned S3 objects** | Not automatically purged. Post-launch: add a weekly job comparing S3 prefixes against `artifact_versions.s3_prefix` and `documents.s3_path` to clean up objects with no matching DB row. |
 
 ### 4.4 File Size Limits
 
@@ -885,7 +962,7 @@ When a webhook creates a `contextual_comment` with `source = 'github_pr'`:
 2. The comment's `file_path` is extracted from the GitHub `path` field (for inline comments).
 3. The comment's `highlight_start/end` maps to the diff hunk position.
 4. A new `execution_wave` is created with `trigger = 'iteration'` and `trigger_comment_id` pointing to this comment.
-5. The orchestrator task runs a focused iteration (only the relevant agent, targeting the specific file/section).
+5. The orchestrator task runs a full iteration — the brief is re-routed through the LLM router, a new team is assembled from the roster, and the full DAG executes. The PR comment is included in the prompt as an iteration instruction so agents know which change is requested.
 6. On completion: push a new commit to the same branch. The PR updates automatically.
 
 ---
@@ -905,11 +982,12 @@ Migration 5: execution_waves
 Migration 6: artifact_versions
 Migration 7: contextual_comments, document_chunks
 Migration 8: Seed default workspace (id = hardcoded MVP workspace)
+Migration 9: Add context fields to workspaces (product_description, company_stage, target_audience, main_goals, existing_team); make documents.project_id nullable; add documents.workspace_id FK
 ```
 
-### 8.2 Clean Slate
+### 8.2 Current Migration State
 
-The codebase has no existing migrations or tables. All migrations are created from scratch following the order defined in Section 8.1.
+9 Alembic migrations are in place following the order defined in Section 8.1. All tables are created and seeded. The default workspace (id = "1") is inserted by Migration 8. Migration 9 added context fields to `workspaces`, made `documents.project_id` nullable, and added `documents.workspace_id`.
 
 ### 8.3 pgvector Extension
 
@@ -923,9 +1001,50 @@ This is already available in the Docker image (`pgvector/pgvector:pg16`).
 
 ---
 
-## 9. Docker Infrastructure
+## 9. Onboarding — Roster Generation
 
-### 9.1 Services (docker-compose)
+### 9.1 Overview
+
+During onboarding the user provides workspace context (company name, domain, tech stack, existing team, etc.). Once saved, the backend generates an initial roster of AI agents using a Haiku LLM call. This roster is the starting point for all subsequent artifact executions.
+
+### 9.2 Agent Generation
+
+Haiku generates a team of leads **and** workers (6–10 agents total):
+
+- **Leads** (`role = "lead"`): Domain experts who plan, delegate, and review. They occupy `wave_type = "planning"` and `wave_type = "review"` slots in the DAG. Every relevant domain must have at least one lead.
+- **Workers** (`role = "worker"`): Specialists who implement. They occupy `wave_type = "execution"` slots.
+
+**Prompt instructions to Haiku:**
+- Generate at least one lead per relevant technical/product domain based on the company context.
+- Contextual leads (Security Lead, DevOps Lead, Data Lead, Mobile Lead) are generated **only** if they are relevant to the described company and tech stack — do not generate them for every workspace.
+- For each agent, output: `name`, `specialization`, `description`, `role` (`"lead"` or `"worker"`), and suggested `tools`.
+
+**Output shape (one element):**
+```json
+{
+  "name": "Tech Lead",
+  "specialization": "Senior software architect and code reviewer",
+  "description": "Plans implementation strategy, reviews produced code, and approves or requests revisions.",
+  "role": "lead",
+  "tools": ["file_read", "file_write"]
+}
+```
+
+### 9.3 Roster Composition Guidelines
+
+| Agent type | Minimum | Maximum | Notes |
+|---|---|---|---|
+| Lead agents | 2 | 4 | PM Lead always included; Tech Lead always included for code workspaces |
+| Worker agents | 3 | 7 | Backend, Frontend, and QA workers generated for most tech workspaces |
+| Total | 6 | 10 | Stay within this range to keep execution costs predictable |
+
+After generation, each agent is inserted into the `agents` table with `status = 'learning'` and `readiness_score = 0`. The learning phase (background Celery task) then runs web research to populate initial `agent_skills` rows.
+
+---
+
+## 10. Docker Infrastructure
+
+### 10.1 Services (docker-compose)
 
 | Service | Image | Port | Purpose |
 |---|---|---|---|
@@ -936,13 +1055,13 @@ This is already available in the Docker image (`pgvector/pgvector:pg16`).
 | **worker** | Same image as backend | — | Celery worker (runs `execute_artifact_dag`, `process_document_upload`) |
 | **beat** | Same image as backend | — | Celery Beat scheduler (runs `reap_orphaned_waves`, `reset_monthly_budgets`) |
 
-### 9.2 Worker Scaling
+### 10.2 Worker Scaling
 
 For MVP, a single Celery worker with concurrency of 1 (`--concurrency=1`) is sufficient. The orchestrator task uses `asyncio.gather` internally for parallelism within a wave, so it's CPU-light and I/O-bound (waiting on LLM API calls).
 
 **Future scaling:** Increase `--concurrency` or add worker replicas. Each execution wave is independent and self-contained — no shared mutable state between tasks.
 
-### 9.3 Redis Configuration
+### 10.3 Redis Configuration
 
 | Setting | Value | Rationale |
 |---|---|---|
@@ -952,7 +1071,7 @@ For MVP, a single Celery worker with concurrency of 1 (`--concurrency=1`) is suf
 
 ---
 
-## 10. Verification Checklist
+## 11. Verification Checklist
 
 Before implementation begins, verify the following against this TDD:
 

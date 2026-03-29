@@ -110,6 +110,32 @@ OUTPUT RULES:
 ## Corrected Output
 {the fixed/improved deliverable}"""
 
+_VALIDATION_FORMAT_RULES: str = """\
+OUTPUT RULES:
+- You are reviewing a DELEGATION PLAN, not code. Evaluate whether each
+  specialist's assignment is specific enough to produce working code
+  without ambiguity.
+- For each specialist delegation, check:
+  1. Is the scope unambiguous? Could two different developers interpret
+     this differently?
+  2. Are input/output contracts specified? What does the specialist
+     receive, and what must they produce?
+  3. Are there contradictions between specialist assignments?
+  4. Are there gaps — work that no specialist is assigned?
+- Output your decision in this exact format:
+
+## Validation Decision
+**Decision:** [APPROVED | REVISE]
+
+## Delegation Evaluation
+[For each specialist: scope clarity, contracts, gaps]
+
+## Revision Instructions (if REVISE)
+[Specific instructions for each planning lead on what to clarify]
+
+APPROVED means every delegation is actionable as-is.
+REVISE means at least one delegation is too vague or contradictory."""
+
 
 # Mapping: slot_role → format rules (primary routing)
 _ROLE_FORMAT_MAP: dict[str, str] = {
@@ -129,6 +155,8 @@ _ROLE_FORMAT_MAP: dict[str, str] = {
     # QA / review roles
     "qa_review": _QA_FORMAT_RULES,
     "validator": _QA_FORMAT_RULES,
+    # Delegation validation role (Ticket 17.3)
+    "delegation_validator": _VALIDATION_FORMAT_RULES,
 }
 
 # Fallback: artifact_type → format rules
@@ -312,6 +340,50 @@ def _format_artifact_brief(brief: dict[str, str | None]) -> str:
 # ---------------------------------------------------------------------------
 # Iteration prompt builder (TDD-03 Section 4.5)
 # ---------------------------------------------------------------------------
+
+
+def build_review_criteria_block(criteria: tuple[str, ...] | list[str]) -> str:
+    """Format review criteria as a numbered grading checklist.
+
+    Ref: Ticket 17.2 (AD-26).
+
+    Each criterion becomes a numbered item the review lead must grade as
+    PASS or FAIL.  The block includes anti-rationalization language to
+    prevent the evaluator from explaining away failures.
+
+    Returns an empty string if criteria is empty.
+    """
+    if not criteria:
+        return ""
+
+    lines = ["## Grading Criteria"]
+    lines.append(
+        "You have access to a `code_exec` tool that runs shell commands against "
+        "the code files. Use it to verify functional correctness — run tests, "
+        "lint, type-check, or attempt to build. Do NOT rely solely on reading "
+        "code. Run it and observe the results before grading."
+    )
+    lines.append("")
+    lines.append(
+        "Evaluate the work against EACH criterion below. For each one, state "
+        "PASS or FAIL with a one-line justification. Do not rationalize "
+        "failures as acceptable — if you cannot verify a criterion, mark it FAIL."
+    )
+    lines.append("")
+
+    for i, criterion in enumerate(criteria, 1):
+        lines.append(f"{i}. {criterion}")
+
+    lines.append("")
+    lines.append(
+        "If ANY criterion is FAIL → your decision must be REVISE "
+        "(with specific feedback per failing criterion).\n"
+        "If all PASS but minor issues exist → MINOR_FIX "
+        "(list exact fixes needed).\n"
+        "If all PASS cleanly → APPROVE."
+    )
+
+    return "\n".join(lines)
 
 
 def build_iteration_prompt(

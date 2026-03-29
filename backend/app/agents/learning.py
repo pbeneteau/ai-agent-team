@@ -17,7 +17,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.anthropic_runner import AgentResult, run_agent
+from app.agents.anthropic_runner import AgentMaxIterationError, AgentResult, run_agent
 from app.agents.memory import count_tokens
 from app.agents.readiness import update_agent_readiness
 from app.config.settings import settings
@@ -39,12 +39,43 @@ execute tasks effectively."""
 
 LEARNING_USER_MSG_TEMPLATE: str = """\
 Research your specialization in the context of this company:
-{domain_description}. Tech stack: {tech_stack}.
+
+Company: {company_name}
+Domain / Industry: {domain_description}{product_line}{stage_line}{audience_line}{goals_line}{team_line}
+Tech stack: {tech_stack}
 
 Produce a core skills document covering:
 - Key concepts and best practices in your domain
+- Specific considerations for this company's product, audience, and goals
 - Common patterns and conventions for this tech stack
 - Industry standards and quality benchmarks
+
+Use web_search and web_browser to research. Be thorough but concise.
+Output your findings as a structured markdown document."""
+
+# ---------------------------------------------------------------------------
+# Targeted research prompts (topic-specific)
+# ---------------------------------------------------------------------------
+
+TARGETED_SYSTEM_PROMPT_TEMPLATE: str = """\
+You are {agent_name}, a {specialization}. A targeted research request has been \
+submitted. Research the specified topic in depth so you can apply this knowledge \
+in future work."""
+
+TARGETED_USER_MSG_TEMPLATE: str = """\
+Research the following topic in the context of your role:
+
+**Topic:** {topic}
+
+Your specialization: {specialization}
+Company: {company_name}
+Domain: {domain_description}
+Tech stack: {tech_stack}
+
+Produce a focused knowledge document covering:
+- Core concepts, definitions, and best practices for this topic
+- How this topic applies to your specialization as a {specialization}
+- Specific relevance to {company_name}'s context and tech stack
 
 Use web_search and web_browser to research. Be thorough but concise.
 Output your findings as a structured markdown document."""
@@ -55,14 +86,19 @@ Output your findings as a structured markdown document."""
 # ---------------------------------------------------------------------------
 
 
-async def execute_learning(agent_id: str) -> None:
+async def execute_learning(agent_id: str, topic: str | None = None) -> None:
     """Run the full learning lifecycle for a newly created agent.
 
     Ref: TDD-03 Section 11.2.
 
+    Args:
+        agent_id: The agent to run learning for.
+        topic: Optional specific topic to research. When provided, uses a
+               targeted prompt instead of the full workspace-context research.
+
     Lifecycle:
     1. Load agent from DB, set status = 'learning'
-    2. Build learning prompt with workspace domain context
+    2. Build learning prompt with workspace domain context (or targeted topic)
     3. Run agent loop with tools: web_search, web_browser, file_write
     4. Parse output → create agent_skills rows with category = 'skill'
     5. Compute readiness score
@@ -72,7 +108,7 @@ async def execute_learning(agent_id: str) -> None:
 
     async with async_session_maker() as db_session:
         try:
-            await _execute_learning_impl(agent_id, db_session)
+            await _execute_learning_impl(agent_id, db_session, topic=topic)
             await db_session.commit()
         except Exception:
             await db_session.rollback()
@@ -92,6 +128,7 @@ async def execute_learning(agent_id: str) -> None:
 async def _execute_learning_impl(
     agent_id: str,
     db_session: AsyncSession,
+    topic: str | None = None,
 ) -> None:
     """Internal learning implementation."""
     # 1. Load agent and workspace
@@ -113,30 +150,74 @@ async def _execute_learning_impl(
     await db_session.flush()
 
     # 3. Build prompts
-    system_prompt = LEARNING_SYSTEM_PROMPT_TEMPLATE.format(
-        agent_name=agent.name,
-        specialization=agent.specialization,
-    )
-    user_message = LEARNING_USER_MSG_TEMPLATE.format(
-        domain_description=workspace.domain_description or "Not specified",
-        tech_stack=workspace.tech_stack or "Not specified",
-    )
+    def _opt(label: str, value: str | None) -> str:
+        return f"\n{label}: {value}" if value else ""
+
+    if topic:
+        # Targeted research: focus on a specific topic
+        system_prompt = TARGETED_SYSTEM_PROMPT_TEMPLATE.format(
+            agent_name=agent.name,
+            specialization=agent.specialization,
+        )
+        user_message = TARGETED_USER_MSG_TEMPLATE.format(
+            topic=topic,
+            specialization=agent.specialization,
+            company_name=workspace.name,
+            domain_description=workspace.domain_description or "Not specified",
+            tech_stack=workspace.tech_stack or "Not specified",
+        )
+    else:
+        # Full workspace-context onboarding research
+        system_prompt = LEARNING_SYSTEM_PROMPT_TEMPLATE.format(
+            agent_name=agent.name,
+            specialization=agent.specialization,
+        )
+        user_message = LEARNING_USER_MSG_TEMPLATE.format(
+            company_name=workspace.name,
+            domain_description=workspace.domain_description or "Not specified",
+            product_line=_opt("Product", workspace.product_description),
+            stage_line=_opt("Company stage", workspace.company_stage),
+            audience_line=_opt("Target audience", workspace.target_audience),
+            goals_line=_opt("Goals", workspace.main_goals),
+            team_line=_opt("Existing team", workspace.existing_team),
+            tech_stack=workspace.tech_stack or "Not specified",
+        )
 
     # 4. Get tools for learning phase and create executor
     tools = get_tools_for_phase("learning")
-    context = ExecutionContext(db_session=db_session)
+    context = ExecutionContext(
+        workspace_id=workspace.id,
+        db_session=db_session,
+    )
     tool_executor = create_tool_executor(tools, context)
 
     # 5. Run agent loop
-    result: AgentResult = await run_agent(
-        system_prompt=system_prompt,
-        user_message=user_message,
-        tools=tools,
-        model=settings.MODEL_SONNET,
-        tool_executor=tool_executor,
-        max_iterations=15,
-        max_tokens=8192,
-    )
+    try:
+        result: AgentResult = await run_agent(
+            system_prompt=system_prompt,
+            user_message=user_message,
+            tools=tools,
+            model=settings.MODEL_SONNET,
+            tool_executor=tool_executor,
+            max_iterations=30,
+            max_tokens=8192,
+        )
+    except AgentMaxIterationError as exc:
+        # Iteration limit hit — treat accumulated output as partial success
+        # rather than failing entirely. The agent still becomes 'ready' with
+        # whatever knowledge it gathered.
+        logger.warning(
+            "Learning agent %s hit iteration limit (%d iters, %d tokens) — saving partial output",
+            agent_id, exc.iterations, exc.input_tokens + exc.output_tokens,
+        )
+        result = AgentResult(
+            text="",
+            files={},
+            input_tokens=exc.input_tokens,
+            output_tokens=exc.output_tokens,
+            assumptions=[],
+            sources=[],
+        )
 
     # 6. Parse output → create agent_skills rows
     await _store_learning_output(agent_id, result, db_session)

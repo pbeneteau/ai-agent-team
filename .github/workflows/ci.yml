@@ -1,0 +1,182 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Backend — pytest (all 592 unit + integration tests, no services required)
+  # ---------------------------------------------------------------------------
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest tests/ -q --tb=short
+        env:
+          # All settings have safe defaults; these overrides silence connection
+          # warnings and keep test output clean.
+          DATABASE_URL: "postgresql+asyncpg://ci:ci@localhost:5432/ci"
+          REDIS_URL: "redis://localhost:6379"
+          ANTHROPIC_API_KEY: "sk-ant-ci-placeholder"
+          ENCRYPTION_KEY: "ci-key-not-used-in-unit-tests"
+
+  # ---------------------------------------------------------------------------
+  # Frontend — TypeScript check + production build
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript check
+        run: pnpm tsc --noEmit
+
+      - name: Build
+        run: pnpm build
+        env:
+          # Suppress Next.js telemetry in CI
+          NEXT_TELEMETRY_DISABLED: "1"
+
+  # ---------------------------------------------------------------------------
+  # Playwright E2E — runs against a locally started Next.js dev server.
+  # Requires: frontend dev server (auto-started via webServer config).
+  # Does NOT require backend — tests assert on DOM structure only.
+  # ---------------------------------------------------------------------------
+  e2e:
+    name: Playwright E2E
+    runs-on: ubuntu-latest
+    # Only run on pushes to main and on PRs — skip draft PRs
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && !github.event.pull_request.draft)
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run Playwright tests
+        run: pnpm test:e2e
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+          CI: "true"
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Docker smoke test — spins up the full compose stack, runs migrations, and
+  # hits the /health endpoint to confirm the backend comes up clean.
+  # Runs on pushes to main only (expensive; skip on every PR).
+  # ---------------------------------------------------------------------------
+  docker-smoke:
+    name: Docker stack smoke test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create backend .env from example
+        run: |
+          cp backend/.env.example backend/.env
+          # Set a real encryption key (Fernet-compatible 32-byte base64)
+          echo "ENCRYPTION_KEY=ZmFrZWtleWZvcmNpZW52aXJvbm1lbnQtMzJieXRlcw==" >> backend/.env
+          echo "ANTHROPIC_API_KEY=sk-ant-ci-placeholder" >> backend/.env
+
+      - name: Build images
+        run: docker compose build --parallel backend worker beat
+
+      - name: Start data services + run migrations
+        run: |
+          docker compose up -d postgres redis minio
+          docker compose up minio-init
+          docker compose up migrate
+
+      - name: Start backend
+        run: docker compose up -d backend
+
+      - name: Wait for backend to be healthy
+        run: |
+          for i in $(seq 1 24); do
+            status=$(docker compose ps --format json backend | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('Health',''))" 2>/dev/null || echo "")
+            if [ "$status" = "healthy" ]; then
+              echo "Backend is healthy."
+              break
+            fi
+            echo "Waiting for backend health ($i/24)..."
+            sleep 5
+          done
+
+      - name: Health endpoint returns 200
+        run: |
+          curl -f --retry 5 --retry-delay 3 --retry-connrefused \
+            http://localhost:8000/health
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs --tail=100
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

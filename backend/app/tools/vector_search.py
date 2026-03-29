@@ -53,7 +53,11 @@ async def embed_query(query_text: str) -> list[float]:
 
 
 async def execute(tool_input: dict[str, Any], context: ExecutionContext) -> str:
-    """Search uploaded project documents using pgvector cosine similarity.
+    """Search uploaded documents using pgvector cosine similarity.
+
+    Searches project-level documents (scoped by project_id) and workspace-level
+    documents (scoped by workspace_id) in a single query. During the learning
+    phase only workspace_id is set; during execution both are available.
 
     Ref: TDD-02 Section 2.4 — retrieval query.
     """
@@ -66,8 +70,8 @@ async def execute(tool_input: dict[str, Any], context: ExecutionContext) -> str:
     if context.db_session is None:
         return "Error: database session not available for vector search."
 
-    if not context.project_id:
-        return "Error: project_id is required for vector search."
+    if not context.project_id and not context.workspace_id:
+        return "Error: project_id or workspace_id is required for vector search."
 
     # Step 1: Embed the query
     try:
@@ -79,26 +83,34 @@ async def execute(tool_input: dict[str, Any], context: ExecutionContext) -> str:
     except httpx.HTTPError as exc:
         return f"Error: embedding request failed: {exc}"
 
-    # Step 2: Run pgvector cosine similarity query (TDD-02 Section 2.4)
-    sql = text("""
+    # Step 2: Build WHERE clause — include project docs and/or workspace docs
+    conditions: list[str] = []
+    params: dict[str, Any] = {
+        "query_embedding": str(embedding),
+        "top_k": top_k,
+    }
+    if context.project_id:
+        conditions.append("d.project_id = :project_id")
+        params["project_id"] = context.project_id
+    if context.workspace_id:
+        conditions.append("d.workspace_id = :workspace_id")
+        params["workspace_id"] = context.workspace_id
+
+    where_clause = " OR ".join(conditions)
+
+    # Step 3: Run pgvector cosine similarity query (TDD-02 Section 2.4)
+    sql = text(f"""
         SELECT dc.content, dc.chunk_index, d.filename
         FROM document_chunks dc
         JOIN documents d ON d.id = dc.document_id
-        WHERE d.project_id = :project_id
+        WHERE ({where_clause})
           AND d.processing_status = 'ready'
         ORDER BY dc.embedding <=> CAST(:query_embedding AS vector)
         LIMIT :top_k
     """)
 
     try:
-        result = await context.db_session.execute(
-            sql,
-            {
-                "project_id": context.project_id,
-                "query_embedding": str(embedding),
-                "top_k": top_k,
-            },
-        )
+        result = await context.db_session.execute(sql, params)
         rows = result.fetchall()
     except Exception as exc:
         logger.exception("Vector search query failed")

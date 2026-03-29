@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
-Phase = Literal["learning", "execution", "reflection"]
+Phase = Literal["learning", "planning", "validation", "execution", "review", "reflection"]
 
 ToolExecutorFn = Callable[[dict[str, Any], "ExecutionContext"], Awaitable[str]]
 
@@ -25,6 +25,7 @@ class ExecutionContext:
     Attributes:
         files: In-memory scratchpad for file_read/file_write. Scoped to one execution.
         project_id: Current project ID (used by vector_search for document scoping).
+        workspace_id: Current workspace ID (used by vector_search to include workspace-level docs).
         db_session: Async SQLAlchemy session for database-backed tools.
         git_connections: GitProviderConnection model instances for the workspace.
         mcp_connections: McpConnection model instances for the workspace.
@@ -32,6 +33,7 @@ class ExecutionContext:
 
     files: dict[str, str] = field(default_factory=dict)
     project_id: str | None = None
+    workspace_id: str | None = None
     db_session: AsyncSession | None = None
     git_connections: list[Any] = field(default_factory=list)
     mcp_connections: list[Any] = field(default_factory=list)
@@ -83,19 +85,26 @@ def get_tools_for_phase(
 
     Ref: TDD-03 Section 6.2 — tool availability matrix.
 
-    +---------------+----------+-----------+------------+
-    | Tool          | Learning | Execution | Reflection |
-    +---------------+----------+-----------+------------+
-    | file_read     | Yes      | Yes       | Yes        |
-    | file_write    | Yes      | Yes       | Yes        |
-    | web_search    | Yes      | Yes       | No         |
-    | web_browser   | Yes      | Yes       | No         |
-    | vector_search | Yes      | Yes       | No         |
-    | mcp_*         | No       | Yes       | No         |
-    | git_clone     | No       | Yes       | No         |
-    | git_push      | No       | Yes       | No         |
-    +---------------+----------+-----------+------------+
+    +---------------+----------+----------+------------+-----------+--------+------------+
+    | Tool          | Learning | Planning | Validation | Execution | Review | Reflection |
+    +---------------+----------+----------+------------+-----------+--------+------------+
+    | file_read     | Yes      | Yes      | Yes        | Yes       | Yes    | Yes        |
+    | file_write    | Yes      | No       | No         | Yes       | No     | Yes        |
+    | code_exec     | No       | No       | No         | No        | Yes    | No         |
+    | web_search    | Yes      | Yes      | No         | Yes       | No     | No         |
+    | web_browser   | Yes      | Yes      | No         | Yes       | No     | No         |
+    | vector_search | Yes      | Yes      | No         | Yes       | No     | No         |
+    | mcp_*         | No       | No       | No         | Yes       | No     | No         |
+    | git_clone     | No       | No       | No         | Yes       | No     | No         |
+    | git_push      | No       | No       | No         | Yes       | No     | No         |
+    +---------------+----------+----------+------------+-----------+--------+------------+
+
+    Planning leads research and plan — they read but do not write files.
+    Validation leads evaluate delegation plans — file_read only, pre-populated with planning outputs.
+    Review leads examine outputs + execute code — file_read + code_exec.
+    Minor-fix leads use execution phase (file_read + file_write) to patch files.
     """
+    from app.tools.code_exec import CODE_EXEC_TOOL
     from app.tools.file_read import FILE_READ_TOOL
     from app.tools.file_write import FILE_WRITE_TOOL
     from app.tools.git_tools import GIT_CLONE_TOOL, GIT_PUSH_TOOL
@@ -107,14 +116,24 @@ def get_tools_for_phase(
     workspace_mcp = workspace_mcp or []
     workspace_git = workspace_git or []
 
-    # Base: file tools available in all phases
+    # Review: file_read + code_exec (verify functional correctness)
+    if phase == "review":
+        return [FILE_READ_TOOL, CODE_EXEC_TOOL]
+
+    # Validation: read-only — pre-populated with planning outputs
+    if phase == "validation":
+        return [FILE_READ_TOOL]
+
+    # Planning: research tools, no file_write
+    if phase == "planning":
+        return [FILE_READ_TOOL, WEB_SEARCH_TOOL, WEB_BROWSER_TOOL, VECTOR_SEARCH_TOOL]
+
+    # Base for learning, execution, reflection
     tools: list[ToolDef] = [FILE_READ_TOOL, FILE_WRITE_TOOL]
 
-    # Learning and execution get web + vector search
     if phase in ("learning", "execution"):
         tools += [WEB_SEARCH_TOOL, WEB_BROWSER_TOOL, VECTOR_SEARCH_TOOL]
 
-    # Execution only: MCP + git
     if phase == "execution":
         tools += build_mcp_tools(workspace_mcp)
         if workspace_git:

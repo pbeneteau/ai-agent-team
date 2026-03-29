@@ -89,7 +89,7 @@ pnpm install
 pnpm dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). Complete onboarding to generate your agent roster.
+Open [http://localhost:3005](http://localhost:3005). Complete onboarding to generate your agent roster.
 
 ### 5. Or run everything via Docker
 

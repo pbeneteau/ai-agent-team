@@ -8,7 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import DateTime
 
 from app.core.database import Base
-from app.models.enums import AgentStatus, ModelTier, ProgressionLevel
+from app.models.enums import AgentRole, AgentStatus, ModelTier, ProgressionLevel
 
 if TYPE_CHECKING:
     from app.models.agent_skill import AgentSkill
@@ -41,6 +41,9 @@ class Agent(Base):
     specialization: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    role: Mapped[str] = mapped_column(
+        String(10), nullable=False, default=AgentRole.WORKER.value, server_default=AgentRole.WORKER.value
+    )
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=AgentStatus.LEARNING.value, server_default=AgentStatus.LEARNING.value
     )

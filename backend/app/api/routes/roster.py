@@ -31,6 +31,7 @@ from app.api.schemas.roster import (
     ReadinessByStatus,
     ReadinessComponent,
     ResearchRequest,
+    RestoreResponse,
     SkillItem,
     SkillsListResponse,
     SkillsSummary,
@@ -129,6 +130,7 @@ async def list_agents(
                 id=a.id,
                 name=a.name,
                 specialization=a.specialization,
+                role=a.role,
                 description=a.description,
                 status=a.status,
                 readiness_score=a.readiness_score,
@@ -164,6 +166,7 @@ async def get_agent(
         id=agent.id,
         name=agent.name,
         specialization=agent.specialization,
+        role=agent.role,
         description=agent.description,
         system_prompt=agent.system_prompt,
         status=agent.status,
@@ -198,6 +201,7 @@ async def create_agent(
         workspace_id=workspace_id,
         name=body.name,
         specialization=body.specialization,
+        role="worker",
         description=body.description,
         model_tier=body.model_tier,
         status="learning",
@@ -219,6 +223,7 @@ async def create_agent(
         id=agent.id,
         name=agent.name,
         specialization=agent.specialization,
+        role=agent.role,
         description=agent.description,
         system_prompt=agent.system_prompt,
         status=agent.status,
@@ -266,6 +271,7 @@ async def update_agent(
         id=agent.id,
         name=agent.name,
         specialization=agent.specialization,
+        role=agent.role,
         description=agent.description,
         system_prompt=agent.system_prompt,
         status=agent.status,
@@ -298,6 +304,27 @@ async def archive_agent(
     agent.archived_at = datetime.now(timezone.utc)
     await db.flush()
     return ArchiveResponse(id=agent.id, archived_at=agent.archived_at)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/roster/{agent_id}/restore — unarchive
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{agent_id}/restore", response_model=RestoreResponse)
+async def restore_agent(
+    agent_id: str,
+    workspace_id: str = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> RestoreResponse:
+    agent = await db.get(Agent, agent_id)
+    if agent is None or agent.workspace_id != workspace_id:
+        raise not_found("agent", agent_id)
+    if agent.archived_at is None:
+        raise validation_error("Agent is not archived.")
+    agent.archived_at = None
+    await db.flush()
+    return RestoreResponse(id=agent.id, restored=True)
 
 
 # ---------------------------------------------------------------------------
@@ -450,7 +477,7 @@ async def trigger_research(
     await db.flush()
 
     from app.core.celery_app import execute_agent_learning
-    execute_agent_learning.delay(agent_id)
+    execute_agent_learning.delay(agent_id, body.topic)
 
     return ActionResponse(message="Research started.", agent_status="learning")
 
@@ -514,9 +541,88 @@ async def list_recommendations(
     workspace_id: str = Depends(get_workspace_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    await _get_agent_or_404(agent_id, workspace_id, db)
-    # MVP: computed on-the-fly, returns empty for now
-    return {"items": []}
+    """Identify knowledge gaps by comparing recent workspace work against agent skills.
+
+    Uses a Haiku LLM call to detect topics that appeared in recent artifacts
+    but are absent from the agent's current skill base.
+    """
+    import json
+    import uuid as _uuid
+    from datetime import datetime, timezone
+
+    from app.agents.anthropic_runner import get_anthropic_client
+    from app.config.settings import settings
+    from app.models.artifact import Artifact
+    from app.models.project import Project
+
+    agent = await _get_agent_or_404(agent_id, workspace_id, db)
+
+    # Load agent's current skill titles
+    skill_result = await db.execute(
+        select(AgentSkill.title, AgentSkill.category)
+        .where(AgentSkill.agent_id == agent_id)
+        .where(AgentSkill.category.in_(["skill", "work_learning"]))
+    )
+    skill_titles = [f"[{r.category}] {r.title}" for r in skill_result.all()]
+
+    # Load recent artifact titles and goals across the workspace
+    artifact_result = await db.execute(
+        select(Artifact.title, Artifact.goal, Artifact.artifact_type)
+        .join(Project, Project.id == Artifact.project_id)
+        .where(Project.workspace_id == workspace_id)
+        .order_by(Artifact.created_at.desc())
+        .limit(10)
+    )
+    recent_artifacts = artifact_result.all()
+
+    if not recent_artifacts:
+        return {"items": []}
+
+    artifacts_text = "\n".join(
+        f"- [{a.artifact_type}] {a.title}: {a.goal or ''}"
+        for a in recent_artifacts
+    )
+    skills_text = "\n".join(skill_titles) if skill_titles else "(none)"
+
+    prompt = (
+        f"You are analyzing knowledge gaps for an AI agent.\n\n"
+        f"Agent: {agent.name} ({agent.specialization})\n\n"
+        f"Current knowledge (skill titles):\n{skills_text}\n\n"
+        f"Recent work items in this workspace:\n{artifacts_text}\n\n"
+        "Identify up to 3 specific topics that appeared in recent work but are "
+        "absent from the agent's current knowledge. Only include genuinely useful gaps.\n\n"
+        "Output a JSON array only:\n"
+        '[{"title": "...", "reason": "...", "suggested_action": "..."}]\n'
+        "If no meaningful gaps found, output: []"
+    )
+
+    try:
+        client = get_anthropic_client()
+        response = await client.messages.create(
+            model=settings.MODEL_HAIKU,
+            max_tokens=512,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        items_raw = json.loads(response.content[0].text)
+    except Exception:
+        logger.warning("Knowledge recommendations LLM call failed for agent %s", agent_id)
+        return {"items": []}
+
+    now = datetime.now(timezone.utc)
+    return {
+        "items": [
+            KnowledgeRecommendation(
+                id=str(_uuid.uuid4()),
+                type="gap",
+                title=item.get("title", ""),
+                reason=item.get("reason", ""),
+                suggested_action=item.get("suggested_action", ""),
+                created_at=now,
+            ).model_dump()
+            for item in items_raw
+            if isinstance(item, dict) and item.get("title")
+        ]
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -532,6 +638,7 @@ async def list_recommendations(
 async def apply_recommendation(
     agent_id: str,
     rec_id: str,
+    topic: str | None = Query(None, description="Topic from the recommendation title"),
     workspace_id: str = Depends(get_workspace_id),
     db: AsyncSession = Depends(get_db),
 ) -> ActionResponse:
@@ -540,7 +647,7 @@ async def apply_recommendation(
     await db.flush()
 
     from app.core.celery_app import execute_agent_learning
-    execute_agent_learning.delay(agent_id)
+    execute_agent_learning.delay(agent_id, topic)
 
     return ActionResponse(
         message="Recommendation applied. Research started.",

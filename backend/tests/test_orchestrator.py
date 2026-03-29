@@ -1073,3 +1073,98 @@ class TestCompileOutputs:
         assert "Researcher 2" in msg
         assert "Market segment A" in msg
         assert "Market segment B" in msg
+
+
+# ---------------------------------------------------------------------------
+# Delegation validation tests (Ticket 17.3)
+# ---------------------------------------------------------------------------
+
+
+class TestDelegationValidation:
+    def test_parse_validation_decision_approved(self) -> None:
+        from app.agents.orchestrator import _parse_validation_decision
+
+        text = "## Validation Decision\n**Decision:** APPROVED\n\nAll good."
+        assert _parse_validation_decision(text) == "APPROVED"
+
+    def test_parse_validation_decision_revise(self) -> None:
+        from app.agents.orchestrator import _parse_validation_decision
+
+        text = "## Validation Decision\n**Decision:** REVISE\n\nNeeds work."
+        assert _parse_validation_decision(text) == "REVISE"
+
+    def test_parse_validation_decision_fallback_bare_keyword(self) -> None:
+        from app.agents.orchestrator import _parse_validation_decision
+
+        text = "I think this needs to be REVISE because the scope is vague."
+        assert _parse_validation_decision(text) == "REVISE"
+
+    def test_parse_validation_decision_fail_open(self) -> None:
+        """Unknown output defaults to APPROVED (fail-open)."""
+        from app.agents.orchestrator import _parse_validation_decision
+
+        text = "Everything looks fine overall."
+        assert _parse_validation_decision(text) == "APPROVED"
+
+    def test_find_best_agent_for_validation_match(self) -> None:
+        from app.agents.orchestrator import _find_best_agent_for_validation
+
+        team = [
+            {"agent_id": "a1", "agent_name": "PM Lead"},
+            {"agent_id": "a2", "agent_name": "Tech Lead"},
+            {"agent_id": "a3", "agent_name": "Backend Dev"},
+        ]
+        result = _find_best_agent_for_validation(["Tech Lead", "Senior Engineer"], team)
+        assert result == "a2"
+
+    def test_find_best_agent_for_validation_fallback(self) -> None:
+        from app.agents.orchestrator import _find_best_agent_for_validation
+
+        team = [{"agent_id": "a1", "agent_name": "Data Scientist"}]
+        result = _find_best_agent_for_validation(["Tech Lead"], team)
+        assert result == "a1"  # Fallback to first agent
+
+    def test_find_best_agent_for_validation_empty_team(self) -> None:
+        from app.agents.orchestrator import _find_best_agent_for_validation
+
+        result = _find_best_agent_for_validation(["Tech Lead"], [])
+        assert result is None
+
+    def test_enrich_wave_with_feedback(self) -> None:
+        from app.agents.orchestrator import _enrich_wave_with_feedback
+
+        wave_data = {
+            "wave_number": 1,
+            "label": "Planning",
+            "agents": [
+                {"role_in_wave": "Plan the feature", "output_key": "plan"},
+            ],
+        }
+        enriched = _enrich_wave_with_feedback(wave_data, "Scope is too vague")
+        assert enriched["wave_number"] == 1
+        assert len(enriched["agents"]) == 1
+        role = enriched["agents"][0]["role_in_wave"]
+        assert "Plan the feature" in role
+        assert "Delegation Validation Feedback" in role
+        assert "Scope is too vague" in role
+        # Original should be unchanged
+        assert "Validation" not in wave_data["agents"][0]["role_in_wave"]
+
+
+class TestValidationPhaseToolRegistry:
+    def test_validation_phase_returns_file_read_only(self) -> None:
+        from app.tools.registry import get_tools_for_phase
+
+        tools = get_tools_for_phase("validation")
+        tool_names = [t.name for t in tools]
+        assert "file_read" in tool_names
+        assert "file_write" not in tool_names
+        assert "web_search" not in tool_names
+
+    def test_validation_format_rules(self) -> None:
+        from app.agents.prompt_builder import get_output_format_rules
+
+        rules = get_output_format_rules("code", "delegation_validator")
+        assert "DELEGATION PLAN" in rules
+        assert "APPROVED" in rules
+        assert "REVISE" in rules

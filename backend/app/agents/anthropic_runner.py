@@ -12,17 +12,23 @@ typed ``AgentResult`` when the model signals ``end_turn``.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable, Protocol
 
 import anthropic
+import tiktoken
 from anthropic import AsyncAnthropic, RateLimitError, APIStatusError
 
 from app.config.settings import settings
 
 logger = logging.getLogger(__name__)
+_telemetry_logger = logging.getLogger("telemetry")
+
+# tiktoken encoder for token estimation (same as memory.py)
+_encoder: tiktoken.Encoding = tiktoken.get_encoding("cl100k_base")
 
 # ---------------------------------------------------------------------------
 # Module-level compiled regex patterns (TDD-03 Section 7.3)
@@ -82,6 +88,9 @@ class AgentResult:
         output_tokens: Cumulative output tokens across all API calls in the loop.
         assumptions: Extracted ``[ASSUMPTION: ...]`` and ``[TBD: ...]`` entries.
         sources: Extracted ``[Source: ...]`` entries.
+        tool_loop_iterations: Number of API round-trips in the loop.
+        tool_calls_log: Ordered list of tool names invoked during the loop.
+        context_tokens_peak: Estimated peak input context size across all calls.
     """
 
     text: str
@@ -90,6 +99,9 @@ class AgentResult:
     output_tokens: int = 0
     assumptions: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
+    tool_loop_iterations: int = 0
+    tool_calls_log: list[str] = field(default_factory=list)
+    context_tokens_peak: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -181,8 +193,8 @@ async def run_agent(
     model: str,
     *,
     tool_executor: ToolExecutor | None = None,
-    max_iterations: int = 15,
-    max_tokens: int = 8192,
+    max_iterations: int | None = None,
+    max_tokens: int | None = None,
 ) -> AgentResult:
     """Run the agent message loop until the model signals ``end_turn``.
 
@@ -215,6 +227,11 @@ async def run_agent(
         anthropic.AuthenticationError: Invalid API key.
         anthropic.BadRequestError: Malformed request (prompt too long, etc.).
     """
+    if max_iterations is None:
+        max_iterations = settings.AGENT_MAX_TOOL_ITERATIONS
+    if max_tokens is None:
+        max_tokens = settings.AGENT_DEFAULT_MAX_TOKENS
+
     client: AsyncAnthropic = get_anthropic_client()
 
     messages: list[dict[str, Any]] = [
@@ -227,10 +244,17 @@ async def run_agent(
     total_input_tokens: int = 0
     total_output_tokens: int = 0
 
+    # Telemetry tracking (Ticket 16.1)
+    tool_calls_log: list[str] = []
+    context_tokens_peak: int = 0
+    completed_iterations: int = 0
+
     # Build the tools payload once (empty list → omit from API call).
     anthropic_tools: list[dict[str, Any]] = [t.to_anthropic() for t in tools]
 
     for iteration in range(max_iterations):
+        completed_iterations = iteration + 1
+
         # ----- API call with retry on transient errors ----- #
         response = await _call_api_with_retry(
             client=client,
@@ -244,6 +268,11 @@ async def run_agent(
         total_input_tokens += response.usage.input_tokens
         total_output_tokens += response.usage.output_tokens
 
+        # Track peak context size from the API's reported input_tokens,
+        # which reflects the actual tokenized input for this call.
+        if response.usage.input_tokens > context_tokens_peak:
+            context_tokens_peak = response.usage.input_tokens
+
         # ----- end_turn → extract and return ----- #
         if response.stop_reason == "end_turn":
             result_text: str = _extract_text_blocks(response.content)
@@ -254,6 +283,9 @@ async def run_agent(
                 output_tokens=total_output_tokens,
                 assumptions=extract_assumptions(result_text),
                 sources=extract_sources(result_text),
+                tool_loop_iterations=completed_iterations,
+                tool_calls_log=tool_calls_log,
+                context_tokens_peak=context_tokens_peak,
             )
 
         # ----- tool_use → execute tools, append results, continue ----- #
@@ -275,6 +307,8 @@ async def run_agent(
                 logger.debug(
                     "Tool call: %s (iteration %d)", tool_name, iteration + 1
                 )
+
+                tool_calls_log.append(tool_name)
 
                 try:
                     result_str: str = await tool_executor(tool_name, tool_input)
@@ -302,6 +336,14 @@ async def run_agent(
             messages.append({"role": "assistant", "content": response.content})
             messages.append({"role": "user", "content": tool_results})
 
+            # Mid-loop context summarization (Ticket 17.4)
+            # Check every _SUMMARIZATION_CHECK_INTERVAL iterations to avoid
+            # overhead on short runs (most agents finish in 3-5 iterations).
+            if (iteration + 1) % _SUMMARIZATION_CHECK_INTERVAL == 0:
+                messages = await _summarize_conversation(
+                    messages, system_prompt, iteration,
+                )
+
             continue
 
         # ----- unexpected stop_reason ----- #
@@ -318,6 +360,9 @@ async def run_agent(
             output_tokens=total_output_tokens,
             assumptions=extract_assumptions(result_text),
             sources=extract_sources(result_text),
+            tool_loop_iterations=completed_iterations,
+            tool_calls_log=tool_calls_log,
+            context_tokens_peak=context_tokens_peak,
         )
 
     # ----- loop exhausted ----- #
@@ -327,6 +372,161 @@ async def run_agent(
         input_tokens=total_input_tokens,
         output_tokens=total_output_tokens,
     )
+
+
+# ---------------------------------------------------------------------------
+# Mid-loop context summarization (Ticket 17.4, AD-28)
+# ---------------------------------------------------------------------------
+
+# How often to check whether summarization is needed (every N iterations).
+_SUMMARIZATION_CHECK_INTERVAL: int = settings.AGENT_SUMMARIZATION_CHECK_INTERVAL
+
+_SUMMARIZATION_SYSTEM_PROMPT: str = """\
+Summarize the conversation so far into a concise state snapshot.
+
+PRESERVE (these are critical for the agent to continue working):
+- All file paths mentioned and their current contents (latest version only)
+- All tool call results that are still relevant
+- All decisions made and their rationale
+- The current task and what remains to be done
+- Any errors encountered and how they were handled
+
+DROP (these waste context without helping):
+- Intermediate reasoning that led to superseded approaches
+- Failed tool attempts that were retried successfully
+- Verbose tool outputs that were replaced by later calls
+- Repetitive content (keep only the latest version)
+
+Output a structured markdown summary. Be thorough but concise."""
+
+
+def _estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
+    """Estimate the total token count across all messages.
+
+    Uses tiktoken cl100k_base as a fast approximation. Serializes non-string
+    content (tool_use blocks, tool_result dicts) to JSON for counting.
+    """
+    total = 0
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            total += len(_encoder.encode(content))
+        elif isinstance(content, list):
+            # Tool results or mixed content blocks
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("content", "") or item.get("text", "")
+                    if isinstance(text, str):
+                        total += len(_encoder.encode(text))
+                    else:
+                        total += len(_encoder.encode(json.dumps(item, default=str)))
+                elif hasattr(item, "text"):
+                    total += len(_encoder.encode(item.text))
+                else:
+                    total += len(_encoder.encode(str(item)))
+        else:
+            # Anthropic response content objects (list of blocks)
+            try:
+                total += len(_encoder.encode(json.dumps(content, default=str)))
+            except (TypeError, ValueError):
+                total += len(_encoder.encode(str(content)))
+    return total
+
+
+async def _summarize_conversation(
+    messages: list[dict[str, Any]],
+    system_prompt: str,
+    iteration: int,
+) -> list[dict[str, Any]]:
+    """Summarize accumulated messages if they exceed the token threshold.
+
+    Returns the original messages unchanged if below threshold, or a
+    compressed two-message conversation if above.
+    """
+    threshold = settings.AGENT_CONTEXT_SUMMARIZATION_THRESHOLD
+    before_tokens = _estimate_messages_tokens(messages)
+
+    if before_tokens <= threshold:
+        return messages
+
+    logger.info(
+        "Context summarization triggered at iteration %d: %d tokens > %d threshold",
+        iteration + 1, before_tokens, threshold,
+    )
+
+    client = get_anthropic_client()
+
+    # Serialize the conversation for the summarizer
+    serialized_parts: list[str] = []
+    for msg in messages:
+        role = msg.get("role", "unknown")
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            serialized_parts.append(f"[{role}]\n{content}")
+        else:
+            serialized_parts.append(f"[{role}]\n{json.dumps(content, default=str)}")
+
+    conversation_text = "\n\n---\n\n".join(serialized_parts)
+
+    # Truncate if the serialized conversation itself is extremely long
+    # (the summarizer has its own context limits)
+    max_summarizer_input = 100_000
+    conv_tokens = len(_encoder.encode(conversation_text))
+    if conv_tokens > max_summarizer_input:
+        # Keep first 30% and last 70% (recency bias for the summarizer too)
+        encoded = _encoder.encode(conversation_text)
+        head_budget = int(max_summarizer_input * 0.3)
+        tail_budget = int(max_summarizer_input * 0.7)
+        conversation_text = (
+            _encoder.decode(encoded[:head_budget])
+            + "\n\n[... middle truncated for summarization ...]\n\n"
+            + _encoder.decode(encoded[-tail_budget:])
+        )
+
+    summarizer_user_msg = (
+        f"## Original System Prompt\n{system_prompt}\n\n"
+        f"## Conversation to Summarize\n{conversation_text}"
+    )
+
+    try:
+        response = await client.messages.create(
+            model=settings.MODEL_HAIKU,
+            max_tokens=4096,
+            system=_SUMMARIZATION_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": summarizer_user_msg}],
+            tools=anthropic.NOT_GIVEN,
+        )
+
+        summary_text = _extract_text_blocks(response.content)
+        if not summary_text.strip():
+            logger.warning("Summarization returned empty text — keeping original messages")
+            return messages
+
+        after_tokens = len(_encoder.encode(summary_text))
+
+        # Emit telemetry
+        _telemetry_logger.info(json.dumps({
+            "event": "context_summarization",
+            "before_tokens": before_tokens,
+            "after_tokens": after_tokens,
+            "iteration": iteration + 1,
+            "reduction_pct": round((1 - after_tokens / before_tokens) * 100, 1) if before_tokens > 0 else 0,
+        }))
+
+        logger.info(
+            "Context summarized: %d → %d tokens (%.0f%% reduction)",
+            before_tokens, after_tokens,
+            (1 - after_tokens / before_tokens) * 100 if before_tokens > 0 else 0,
+        )
+
+        return [
+            {"role": "user", "content": summary_text},
+            {"role": "assistant", "content": "Understood. Continuing from the summarized state."},
+        ]
+
+    except Exception:
+        logger.exception("Context summarization failed — keeping original messages")
+        return messages
 
 
 # ---------------------------------------------------------------------------

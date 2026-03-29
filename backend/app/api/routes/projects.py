@@ -146,6 +146,39 @@ async def create_project(
         id=project.id,
         name=project.name,
         description=project.description,
+        artifact_count=0,
+        brief_status=_brief_status(project),
+        brief_draft=project.brief_draft,
+        brief_published=project.brief_published,
+        brief_fingerprint=project.brief_fingerprint,
+        brief_published_at=project.brief_published_at,
+        created_at=project.created_at,
+        updated_at=project.updated_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/projects/{id}
+# ---------------------------------------------------------------------------
+
+
+@router.get("/projects/{project_id}", response_model=ProjectDetail)
+async def get_project(
+    project_id: str,
+    workspace_id: str = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> ProjectDetail:
+    project = await _get_project_or_404(project_id, workspace_id, db)
+    art_count = await db.scalar(
+        select(func.count()).select_from(Artifact).where(Artifact.project_id == project_id)
+    ) or 0
+
+    return ProjectDetail(
+        id=project.id,
+        name=project.name,
+        description=project.description,
+        artifact_count=art_count,
+        brief_status=_brief_status(project),
         brief_draft=project.brief_draft,
         brief_published=project.brief_published,
         brief_fingerprint=project.brief_fingerprint,
@@ -176,10 +209,16 @@ async def update_project(
 
     await db.flush()
 
+    art_count = await db.scalar(
+        select(func.count()).select_from(Artifact).where(Artifact.project_id == project_id)
+    ) or 0
+
     return ProjectDetail(
         id=project.id,
         name=project.name,
         description=project.description,
+        artifact_count=art_count,
+        brief_status=_brief_status(project),
         brief_draft=project.brief_draft,
         brief_published=project.brief_published,
         brief_fingerprint=project.brief_fingerprint,

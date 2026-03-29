@@ -13,6 +13,7 @@ import pytest
 from app.agents.prompt_builder import (
     AUTO_ASSUME_RULE,
     build_iteration_prompt,
+    build_review_criteria_block,
     build_system_prompt,
     build_user_message,
     get_output_format_rules,
@@ -406,3 +407,48 @@ class TestEmptySectionHandling:
         agent = _MockAgent(system_prompt=None)
         prompt = build_system_prompt(agent, "OUTPUT RULES: test")
         assert "None" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# Verify 6: build_review_criteria_block (Ticket 17.2)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildReviewCriteriaBlock:
+    def test_empty_criteria_returns_empty(self) -> None:
+        assert build_review_criteria_block(()) == ""
+        assert build_review_criteria_block([]) == ""
+
+    def test_produces_numbered_list(self) -> None:
+        block = build_review_criteria_block((
+            "Code compiles without errors",
+            "All tests pass",
+        ))
+        assert "1. Code compiles without errors" in block
+        assert "2. All tests pass" in block
+
+    def test_includes_grading_header(self) -> None:
+        block = build_review_criteria_block(("Criterion A",))
+        assert "## Grading Criteria" in block
+
+    def test_includes_anti_rationalization(self) -> None:
+        block = build_review_criteria_block(("Criterion A",))
+        assert "Do not rationalize" in block
+        assert "FAIL" in block
+
+    def test_includes_decision_mapping(self) -> None:
+        block = build_review_criteria_block(("Criterion A",))
+        assert "REVISE" in block
+        assert "MINOR_FIX" in block
+        assert "APPROVE" in block
+
+    def test_multiple_criteria(self) -> None:
+        criteria = (
+            "Root cause addressed",
+            "No regressions",
+            "Tests present",
+            "Edge cases handled",
+        )
+        block = build_review_criteria_block(criteria)
+        for i, c in enumerate(criteria, 1):
+            assert f"{i}. {c}" in block

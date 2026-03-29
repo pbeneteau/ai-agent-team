@@ -701,7 +701,14 @@ class TestPromptContent:
         assert "foundational knowledge" in sys_prompt
 
         user_msg = LEARNING_USER_MSG_TEMPLATE.format(
-            domain_description="SaaS", tech_stack="React"
+            company_name="TestCo",
+            domain_description="SaaS",
+            tech_stack="React",
+            product_line="",
+            stage_line="",
+            audience_line="",
+            goals_line="",
+            team_line="",
         )
         assert "Key concepts and best practices" in user_msg
         assert "web_search" in user_msg

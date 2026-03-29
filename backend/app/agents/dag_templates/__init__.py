@@ -1,26 +1,35 @@
-"""DAG template registry — 5 MVP execution plan templates.
+"""DAG template registry — 13 code-focused execution plan templates.
 
-Ref: TDD-03 Section 2.1-2.3 (template concept, schema, definitions),
-     TDD-03 Section 2.4 (registry pattern).
+All templates follow a lead-guided structure:
+  - Planning wave(s): lead agents analyze the brief and produce delegation plans
+  - Execution wave(s): specialist agents implement their delegated tasks
+  - Review wave: lead agents evaluate outputs and decide APPROVE / MINOR_FIX / REVISE
 
 Usage::
 
     from app.agents.dag_templates import get_template, TEMPLATE_REGISTRY
 
-    template = get_template("code_feature")
+    template = get_template("full_feature")
     for wave in template.waves:
-        for slot in wave.slots:
-            print(slot.slot_id, slot.suggested_specializations)
+        print(wave.wave_type, [(s.slot_id, s.is_lead) for s in wave.slots])
 """
 
 from __future__ import annotations
 
 from app.agents.dag_templates.schema import DagSlot, DagTemplate, DagWave
-from app.agents.dag_templates.code_bugfix import CODE_BUGFIX_TEMPLATE
-from app.agents.dag_templates.code_feature import CODE_FEATURE_TEMPLATE
-from app.agents.dag_templates.content_research import CONTENT_RESEARCH_TEMPLATE
-from app.agents.dag_templates.multi_research import MULTI_RESEARCH_TEMPLATE
-from app.agents.dag_templates.simple_prose import SIMPLE_PROSE_TEMPLATE
+from app.agents.dag_templates.full_feature import FULL_FEATURE_TEMPLATE
+from app.agents.dag_templates.backend_feature import BACKEND_FEATURE_TEMPLATE
+from app.agents.dag_templates.frontend_feature import FRONTEND_FEATURE_TEMPLATE
+from app.agents.dag_templates.bug_fix import BUG_FIX_TEMPLATE
+from app.agents.dag_templates.refactor import REFACTOR_TEMPLATE
+from app.agents.dag_templates.security_fix import SECURITY_FIX_TEMPLATE
+from app.agents.dag_templates.performance import PERFORMANCE_TEMPLATE
+from app.agents.dag_templates.infra_devops import INFRA_DEVOPS_TEMPLATE
+from app.agents.dag_templates.mobile_feature import MOBILE_FEATURE_TEMPLATE
+from app.agents.dag_templates.data_feature import DATA_FEATURE_TEMPLATE
+from app.agents.dag_templates.api_integration import API_INTEGRATION_TEMPLATE
+from app.agents.dag_templates.architecture import ARCHITECTURE_TEMPLATE
+from app.agents.dag_templates.design_system import DESIGN_SYSTEM_TEMPLATE
 
 __all__ = [
     "DagSlot",
@@ -29,11 +38,20 @@ __all__ = [
     "TEMPLATE_REGISTRY",
     "get_template",
     "validate_template",
-    "CODE_BUGFIX_TEMPLATE",
-    "CODE_FEATURE_TEMPLATE",
-    "CONTENT_RESEARCH_TEMPLATE",
-    "MULTI_RESEARCH_TEMPLATE",
-    "SIMPLE_PROSE_TEMPLATE",
+    # Templates
+    "FULL_FEATURE_TEMPLATE",
+    "BACKEND_FEATURE_TEMPLATE",
+    "FRONTEND_FEATURE_TEMPLATE",
+    "BUG_FIX_TEMPLATE",
+    "REFACTOR_TEMPLATE",
+    "SECURITY_FIX_TEMPLATE",
+    "PERFORMANCE_TEMPLATE",
+    "INFRA_DEVOPS_TEMPLATE",
+    "MOBILE_FEATURE_TEMPLATE",
+    "DATA_FEATURE_TEMPLATE",
+    "API_INTEGRATION_TEMPLATE",
+    "ARCHITECTURE_TEMPLATE",
+    "DESIGN_SYSTEM_TEMPLATE",
 ]
 
 # ---------------------------------------------------------------------------
@@ -41,11 +59,19 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 TEMPLATE_REGISTRY: dict[str, DagTemplate] = {
-    CODE_FEATURE_TEMPLATE.template_id: CODE_FEATURE_TEMPLATE,
-    CONTENT_RESEARCH_TEMPLATE.template_id: CONTENT_RESEARCH_TEMPLATE,
-    SIMPLE_PROSE_TEMPLATE.template_id: SIMPLE_PROSE_TEMPLATE,
-    CODE_BUGFIX_TEMPLATE.template_id: CODE_BUGFIX_TEMPLATE,
-    MULTI_RESEARCH_TEMPLATE.template_id: MULTI_RESEARCH_TEMPLATE,
+    FULL_FEATURE_TEMPLATE.template_id:      FULL_FEATURE_TEMPLATE,
+    BACKEND_FEATURE_TEMPLATE.template_id:   BACKEND_FEATURE_TEMPLATE,
+    FRONTEND_FEATURE_TEMPLATE.template_id:  FRONTEND_FEATURE_TEMPLATE,
+    BUG_FIX_TEMPLATE.template_id:           BUG_FIX_TEMPLATE,
+    REFACTOR_TEMPLATE.template_id:          REFACTOR_TEMPLATE,
+    SECURITY_FIX_TEMPLATE.template_id:      SECURITY_FIX_TEMPLATE,
+    PERFORMANCE_TEMPLATE.template_id:       PERFORMANCE_TEMPLATE,
+    INFRA_DEVOPS_TEMPLATE.template_id:      INFRA_DEVOPS_TEMPLATE,
+    MOBILE_FEATURE_TEMPLATE.template_id:    MOBILE_FEATURE_TEMPLATE,
+    DATA_FEATURE_TEMPLATE.template_id:      DATA_FEATURE_TEMPLATE,
+    API_INTEGRATION_TEMPLATE.template_id:   API_INTEGRATION_TEMPLATE,
+    ARCHITECTURE_TEMPLATE.template_id:      ARCHITECTURE_TEMPLATE,
+    DESIGN_SYSTEM_TEMPLATE.template_id:     DESIGN_SYSTEM_TEMPLATE,
 }
 
 
@@ -84,6 +110,9 @@ def validate_template(template: DagTemplate) -> list[str]:
     4. ``required_roles`` matches the union of all ``suggested_specializations``
        across every slot (including ``compile_slot`` if present).
     5. Wave numbers are sequential starting from 1.
+    6. Every template has exactly one review wave (``wave_type == "review"``).
+    7. Planning waves (if any) come before execution waves.
+    8. Lead slots (``is_lead=True``) only appear in planning or review waves.
     """
     errors: list[str] = []
 
@@ -98,7 +127,6 @@ def validate_template(template: DagTemplate) -> list[str]:
 
     if template.compile_slot is not None:
         all_slot_ids.append(template.compile_slot.slot_id)
-        # Compile slot is conceptually after all waves.
         compile_wave = max((w.wave_number for w in template.waves), default=0) + 1
         slot_to_wave[template.compile_slot.slot_id] = compile_wave
 
@@ -133,18 +161,17 @@ def validate_template(template: DagTemplate) -> list[str]:
             actual_roles.update(slot.suggested_specializations)
     if template.compile_slot is not None:
         actual_roles.update(template.compile_slot.suggested_specializations)
+    if template.validation_wave is not None:
+        for slot in template.validation_wave.slots:
+            actual_roles.update(slot.suggested_specializations)
 
     if template.required_roles != actual_roles:
         missing = actual_roles - template.required_roles
         extra = template.required_roles - actual_roles
         if missing:
-            errors.append(
-                f"required_roles missing: {missing}"
-            )
+            errors.append(f"required_roles missing: {missing}")
         if extra:
-            errors.append(
-                f"required_roles has extra entries not in any slot: {extra}"
-            )
+            errors.append(f"required_roles has extra entries not in any slot: {extra}")
 
     # 5. Wave numbering.
     expected = 1
@@ -154,5 +181,32 @@ def validate_template(template: DagTemplate) -> list[str]:
                 f"Expected wave_number {expected}, got {wave.wave_number}"
             )
         expected += 1
+
+    # 6. Exactly one review wave.
+    review_waves = [w for w in template.waves if w.wave_type == "review"]
+    if len(review_waves) != 1:
+        errors.append(
+            f"Template must have exactly 1 review wave, found {len(review_waves)}"
+        )
+
+    # 7. Planning waves before execution waves.
+    wave_types = [w.wave_type for w in template.waves]
+    seen_execution = False
+    for i, wt in enumerate(wave_types):
+        if wt == "execution":
+            seen_execution = True
+        if wt == "planning" and seen_execution:
+            errors.append(
+                f"Wave {i + 1}: planning wave found after an execution wave"
+            )
+
+    # 8. Lead slots only in planning or review waves.
+    for wave in template.waves:
+        for slot in wave.slots:
+            if slot.is_lead and wave.wave_type == "execution":
+                errors.append(
+                    f"Slot {slot.slot_id!r} is marked is_lead=True but is in "
+                    f"an execution wave (wave {wave.wave_number})"
+                )
 
     return errors

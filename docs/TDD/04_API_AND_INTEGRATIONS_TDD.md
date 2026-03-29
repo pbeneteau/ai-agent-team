@@ -109,14 +109,19 @@ All IDs are UUID v4 strings: `"a1b2c3d4-e5f6-7890-abcd-ef1234567890"`.
 
 ### `POST /api/onboarding`
 
-First-time setup. Generates a default agent roster based on company context.
+First-time setup. Generates a tailored agent roster based on company context.
 
 **Request:**
 ```json
 {
   "company_name": "Acme SaaS",
   "domain_description": "B2B project management tool for small teams",
+  "product_description": "A Kanban-style board with built-in sprint planning",
   "tech_stack": "Next.js, FastAPI, PostgreSQL",
+  "company_stage": "startup",
+  "target_audience": "Engineering teams at Series A startups",
+  "main_goals": "Ship faster, improve documentation quality",
+  "existing_team": "2 engineers, no designers",
   "team_size": 3,
   "use_case": "both"
 }
@@ -125,8 +130,13 @@ First-time setup. Generates a default agent roster based on company context.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `company_name` | `string` | Yes | |
-| `domain_description` | `string` | Yes | Industry, product, goals |
-| `tech_stack` | `string` | No | Tech stack (pre-fills agent context) |
+| `domain_description` | `string` | Yes | Industry / domain |
+| `product_description` | `string` | No | What the product does, the problem it solves |
+| `tech_stack` | `string` | No | Tech stack |
+| `company_stage` | `string` | No | `"idea"`, `"startup"`, `"growing"`, `"established"` |
+| `target_audience` | `string` | No | Who the customers are |
+| `main_goals` | `string` | No | What the company wants to accomplish |
+| `existing_team` | `string` | No | Current team roles (agents fill the gaps) |
 | `team_size` | `integer` | No | Company headcount |
 | `use_case` | `string` | Yes | `"code"`, `"content"`, or `"both"` |
 
@@ -152,14 +162,63 @@ First-time setup. Generates a default agent roster based on company context.
 ```
 
 **Behavior:**
-1. Updates the workspace row with `company_name`, `domain_description`, `tech_stack`.
-2. Generates a roster via LLM call (Haiku — reads the company context, outputs agent names + specializations). Fallback: hardcoded default roster if LLM fails.
+1. Updates the workspace row with all context fields.
+2. Generates a roster via LLM call (Haiku — full context including product, audience, goals, and existing team). Fallback: hardcoded default roster if LLM fails.
 3. Creates agent rows. Each enters `learning` status.
 4. Enqueues `execute_agent_learning` Celery tasks for all agents.
 5. Sets `workspace.onboarding_completed = true`.
 
 **Error:**
 - `409 Conflict` if `workspace.onboarding_completed` is already `true`.
+
+---
+
+### `GET /api/workspace`
+
+Returns the current workspace context.
+
+**Response: `200 OK`** — full workspace detail including all context fields.
+
+---
+
+### `PATCH /api/workspace`
+
+Update workspace context fields post-onboarding (Settings → Workspace page).
+
+**Request:** Any subset of `name`, `domain_description`, `product_description`, `tech_stack`, `company_stage`, `target_audience`, `main_goals`, `existing_team`.
+
+**Response: `200 OK`** — updated workspace detail.
+
+**Side effect — re-trigger agent learning or generate roster:** If any field in `CONTEXT_FIELDS` = `{domain_description, product_description, target_audience, main_goals, existing_team, tech_stack, company_stage}` is included in the PATCH, the handler checks the roster:
+
+- **Roster exists (≥ 1 non-archived agent):** Enqueues `execute_agent_learning` for every agent whose `status` is `ready` or `learning`. This refreshes foundational knowledge to reflect the updated company context.
+- **Roster is empty (0 non-archived agents):** Calls `_generate_roster()` (same Haiku-powered function as onboarding) to generate a fresh roster from the current workspace context, creates agents in `learning` status with `use_case = "both"`, and enqueues `execute_agent_learning` for each. This handles the case where all agents were deleted and the user saves the workspace to recreate the roster.
+
+---
+
+### `GET /api/workspace/documents`
+
+List workspace-level context documents (available to all agents across all projects).
+
+**Response: `200 OK`** — paginated list of `WorkspaceDocumentItem`.
+
+---
+
+### `POST /api/workspace/documents`
+
+Upload a workspace-level context document (PDF, DOCX, TXT, MD). Max 20 MB.
+
+**Request:** `multipart/form-data` with `file` field.
+
+**Response: `201 Created`** — `WorkspaceDocumentItem`.
+
+---
+
+### `DELETE /api/workspace/documents/{document_id}`
+
+Delete a workspace-level context document.
+
+**Response: `204 No Content`**
 
 ---
 
@@ -284,6 +343,23 @@ Soft-archive an agent. Sets `archived_at` timestamp. Agent is excluded from auto
 
 ---
 
+### `POST /api/roster/{agent_id}/restore`
+
+Restore a soft-archived agent. Clears `archived_at` so the agent re-enters the active roster and auto-assembly.
+
+**Response: `200 OK`**
+```json
+{
+  "id": "uuid",
+  "restored": true
+}
+```
+
+**Errors:**
+- `404` if agent not found.
+
+---
+
 ### `DELETE /api/roster/{agent_id}/permanent`
 
 Hard-delete an agent and all associated data (skills, learnings, workspace). Irreversible.
@@ -342,7 +418,7 @@ Get the agent's learning profile and knowledge readiness breakdown.
   "completed_artifacts": 12,
   "avg_quality_score": 4.2,
   "last_reflection_at": "2026-03-20T14:00:00Z",
-  "skill_token_usage": { "used": 5300, "max": 8000 }
+  "skill_token_usage": { "used_tokens": 5300, "max_tokens": 8000, "used_pct": 66 }
 }
 ```
 
@@ -406,7 +482,7 @@ One of `file` or `url` must be provided.
 }
 ```
 
-**Behavior:** The agent enters `learning` status. A Celery task fetches the content (file from upload or page from URL), extracts text, and creates `agent_skills` entries with `category = 'skill'`. Agent returns to `ready` when complete.
+**Behavior (MVP stub):** The agent enters `learning` status and a generic learning task is enqueued (`execute_agent_learning`). The file/URL content is accepted and validated but **not yet forwarded to the learning task** — the task performs standard web research instead. Post-launch: wire the file bytes / fetched URL content into a dedicated ingestion path that skips web research and directly extracts skills from the provided content.
 
 ---
 
@@ -992,6 +1068,30 @@ Cancel an artifact (soft archive).
 
 ---
 
+### `POST /api/artifacts/{id}/retry`
+
+Retry a failed execution. Copies the DAG plan from the last failed wave and enqueues a new execution.
+
+**Response: `202 Accepted`**
+```json
+{
+  "artifact_id": "uuid",
+  "execution_wave_id": "uuid",
+  "status": "drafting"
+}
+```
+
+**Behavior:**
+1. Validates artifact is in `drafting` status (not yet in review or approved).
+2. Finds the most recent failed `ExecutionWave` for the artifact.
+3. Creates a new `ExecutionWave` with `trigger = 'retry'`, copying `dag_plan`, `assembled_team`, `total_steps`, and `step_labels` from the failed wave.
+4. Enqueues `execute_artifact_dag` with the new wave ID.
+
+**Errors:**
+- `400` if no failed wave found, or artifact is not in `drafting` status.
+
+---
+
 ### `GET /api/projects/{project_id}/artifacts`
 
 List all artifacts in a project.
@@ -1540,7 +1640,21 @@ Update the monthly budget ceiling.
 
 ---
 
-## 13. Health
+## 13. WebSocket
+
+### `GET /ws` (WebSocket upgrade)
+
+Real-time event stream for the frontend. Clients connect via WebSocket upgrade to `/ws` (no `/api` prefix). See TDD-02 Section 3.5 for the full list of event types broadcast by the server.
+
+```
+ws://localhost:8000/ws
+```
+
+The connection is kept alive by the client sending any message (e.g., a periodic ping). Dead connections are cleaned up automatically by the `WebSocketManager`. No authentication is required (same no-auth policy as the REST API for MVP).
+
+---
+
+## 14. Health
 
 ### `GET /health`
 
@@ -1561,7 +1675,7 @@ Checks: PostgreSQL connection, Redis ping, MinIO bucket exists. Returns `503` if
 
 ---
 
-## 14. Endpoint Summary
+## 15. Endpoint Summary
 
 ### Core Artifact Flow
 
@@ -1577,6 +1691,7 @@ Checks: PostgreSQL connection, Redis ping, MinIO bucket exists. Returns `503` if
 | `POST` | `/api/artifacts/{id}/iterate` | Submit feedback + trigger iteration |
 | `PATCH` | `/api/artifacts/{id}/approve` | Approve (prose) |
 | `PATCH` | `/api/artifacts/{id}/cancel` | Cancel (soft archive) |
+| `POST` | `/api/artifacts/{id}/retry` | Retry cancelled/failed artifact |
 | `POST` | `/api/briefs/sufficiency-check` | Standalone brief validation |
 | `GET` | `/api/projects/{pid}/artifacts` | List project artifacts |
 
@@ -1590,6 +1705,7 @@ Checks: PostgreSQL connection, Redis ping, MinIO bucket exists. Returns `503` if
 | `POST` | `/api/roster` | Add agent |
 | `PATCH` | `/api/roster/{id}` | Update agent |
 | `DELETE` | `/api/roster/{id}` | Archive agent |
+| `POST` | `/api/roster/{id}/restore` | Restore archived agent |
 | `DELETE` | `/api/roster/{id}/permanent` | Hard delete agent |
 | `GET` | `/api/roster/{id}/skills` | List skills |
 | `GET` | `/api/roster/{id}/learning-profile` | Learning profile |
@@ -1632,6 +1748,16 @@ Checks: PostgreSQL connection, Redis ping, MinIO bucket exists. Returns `503` if
 | `POST` | `/api/mcp/connections/{id}/discover-tools` | Discover tools |
 | `DELETE` | `/api/mcp/connections/{id}` | Delete connection |
 
+### Workspace
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/workspace` | Get workspace detail |
+| `PATCH` | `/api/workspace` | Update workspace context |
+| `GET` | `/api/workspace/documents` | List workspace-level documents |
+| `POST` | `/api/workspace/documents` | Upload workspace-level document |
+| `DELETE` | `/api/workspace/documents/{id}` | Delete workspace-level document |
+
 ### Webhooks
 
 | Method | Endpoint | Description |
@@ -1646,14 +1772,15 @@ Checks: PostgreSQL connection, Redis ping, MinIO bucket exists. Returns `503` if
 | `GET` | `/api/usage` | Usage stats |
 | `PATCH` | `/api/usage/budget` | Update budget ceiling |
 | `GET` | `/health` | Health check |
+| `GET` | `/ws` | WebSocket real-time event stream |
 
-**Total: 44 endpoints.**
+**Total: 62 endpoints (61 REST + 1 WebSocket).**
 
 ---
 
-## 15. Verification Checklist
+## 16. Verification Checklist
 
-- [ ] All 39 endpoints return correct HTTP status codes and response schemas
+- [ ] All 62 endpoints return correct HTTP status codes and response schemas
 - [ ] Cursor-based pagination works: first page (no cursor), subsequent pages (with cursor), empty page (`has_more: false`)
 - [ ] `POST /api/onboarding` creates workspace + agents and enqueues learning tasks
 - [ ] `POST /api/artifacts/{id}/delegate` with `confirm: false` returns plan preview; with `confirm: true` enqueues execution

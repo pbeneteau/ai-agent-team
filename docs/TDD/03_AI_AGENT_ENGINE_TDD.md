@@ -11,7 +11,7 @@
 
 | ID | Decision | Rationale |
 |---|---|---|
-| **AD-8** | Hybrid DAG generation: hardcoded templates + LLM router | Generating DAGs from scratch is slow and hallucination-prone. Predefined templates give speed and determinism; a fast LLM call routes briefs to the best template. |
+| **AD-8** | Hybrid DAG generation: hardcoded templates + LLM router | Generating DAGs from scratch is slow and hallucination-prone. Predefined templates give speed and determinism; a fast LLM call routes briefs to the best template. 13 code-focused templates. |
 | **AD-9** | One combined Haiku call for auto-assembly + routing | Speed is critical. One Haiku call reads the brief, selects a DAG template, AND maps roster agents to template slots. Single JSON response. |
 | **AD-10** | Sufficiency check uses Sonnet | Manual "Validate" click means 2-4s latency is acceptable. Sonnet catches subtle ambiguities far better than Haiku. Cost justified by massive brief quality improvement. |
 | **AD-11** | Full upstream output with 15k token cap (truncate middle) | Cross-functional handoffs need high fidelity (hex codes, spacing rules). Summarizing destroys technical detail. Token cap prevents runaway context. |
@@ -28,7 +28,7 @@ The gatekeeper that ensures agents receive unambiguous specs. Runs when the user
 
 ### 1.2 Model
 
-**Claude Sonnet** (`claude-sonnet-4-5`). Target latency: < 4 seconds. Typical cost: ~$0.003-0.008 per check.
+**Claude Sonnet** (`settings.MODEL_SONNET` — currently `claude-sonnet-4-20250514`). Target latency: < 4 seconds. Typical cost: ~$0.003-0.008 per check.
 
 ### 1.3 System Prompt
 
@@ -74,14 +74,12 @@ Target Audience: {artifact.target_audience}
 Context: {artifact.context}
 Description: {artifact.description}
 
-Artifact Type: {artifact.artifact_type}  (prose or code)
-```
-
-If `artifact_type == "code"`, append:
-```
+Artifact Type: code
 Tech Stack Context: {workspace.tech_stack}
 Target Repository: {artifact.git_repo_url or "Not specified"}
 ```
+
+> **Note:** All artifacts are code artifacts. Prose/content artifact types are not supported.
 
 ### 1.5 Response Schema
 
@@ -146,16 +144,21 @@ async def run_sufficiency_check(artifact: Artifact, workspace: Workspace) -> Suf
 
 **Fail-open policy:** If the sufficiency check LLM call fails (timeout, malformed response), we do NOT block the user. We return `eligible: true` with a warning. The pre-flight check is a quality gate, not a security gate.
 
+> **Note on lead-structured templates:** For all 13 code-focused templates (Section 2), the lead review cycle (APPROVE / MINOR_FIX / REVISE) supersedes the sufficiency check as the primary quality gate. The sufficiency check is retained for legacy templates only.
+
 ---
 
 ## 2. DAG Template Library
 
+> **Scope note:** All templates in this system are code-focused. Prose/content artifact templates are not supported in the current architecture.
+
 ### 2.1 Concept
 
 DAG templates are predefined, hardcoded execution plans. Each template defines:
-- A sequence of **waves** (sequential stages)
-- **Slots** within each wave (agent roles to be filled from the roster)
+- A sequence of **waves** (sequential stages), each typed as `planning`, `execution`, or `review`
+- **Slots** within each wave (agent roles to be filled from the roster), each marked `is_lead: true/false`
 - **Dependencies** (which slots receive upstream output)
+- A `max_iterations` cap governing how many planning → execution → review cycles may occur
 - Whether a **compile step** is needed (only for multi-output merges)
 
 Templates are Python dataclasses, not database rows. Adding a new template = adding a Python file + registering it.
@@ -166,181 +169,140 @@ Templates are Python dataclasses, not database rows. Adding a new template = add
 @dataclass
 class DagSlot:
     """A role in the DAG that will be filled by a roster agent."""
-    slot_id: str                    # Unique key (e.g., "product_spec")
-    label: str                      # Human-readable (e.g., "Product Specification")
-    role_prompt: str                # Instructions for this agent in this DAG
-    suggested_specializations: list[str]  # Roster matching hints (e.g., ["Product Expert", "Product Manager"])
+    slot_id: str                    # Unique key (e.g., "tech_lead_plan")
+    label: str                      # Human-readable (e.g., "Tech Lead — Planning")
+    role_prompt: str                # Static instructions for this agent in this DAG (fallback if no delegation plan match)
+    suggested_specializations: list[str]  # Roster matching hints AND delegation plan matching keys
+    is_lead: bool = False           # True for planning/review leads; False for execution workers
 
 @dataclass
 class DagWave:
     """A parallel execution stage."""
     wave_number: int
-    label: str                      # Heartbeat UI label (e.g., "Researching competitors...")
+    label: str                      # Heartbeat UI label (e.g., "Planning phase...")
     slots: list[DagSlot]            # Agents to run in parallel
     depends_on: list[str]           # slot_ids from previous waves whose output this wave receives
+    wave_type: str = "execution"    # "planning" | "execution" | "review"
 
 @dataclass
 class DagTemplate:
     """A predefined execution plan."""
-    template_id: str                # Unique key (e.g., "code_feature")
-    name: str                       # Human-readable (e.g., "Code Feature Build")
+    template_id: str                # Unique key (e.g., "full_feature")
+    name: str                       # Human-readable (e.g., "Full Product Feature")
     description: str                # For the router LLM to understand when to pick this template
-    artifact_type: str              # "prose", "code", or "both"
+    artifact_type: str = "code"     # Always "code" for all current templates
     waves: list[DagWave]
-    needs_compile: bool             # Whether to add a final compile wave
-    compile_slot: DagSlot | None    # If needs_compile, the compiler agent slot
+    needs_compile: bool = False     # Whether to add a final compile wave
+    compile_slot: DagSlot | None = None  # If needs_compile, the compiler agent slot
+    max_iterations: int = 3         # Max planning→execution→review cycles before force-finalize
 ```
 
-### 2.3 MVP Template Definitions
+### 2.3 Template Definitions
 
-#### Template: `code_feature`
+All 13 templates follow the three-phase lead-guided pattern (see Section 2A). The table below summarises the full library:
 
-**"Build a feature with product, design, and QA input."**
-
-```
-Wave 1 — "Defining requirements & design specs"
-  ├── slot: product_spec
-  │   role: "Analyze the brief. Produce: user flows, functional requirements,
-  │          acceptance criteria, edge cases. Output as structured markdown."
-  │   suggested_specializations: ["Product Expert", "Product Manager"]
-  │
-  └── slot: design_spec
-      role: "Analyze the brief. Produce: component hierarchy, spacing/layout rules,
-             design tokens, accessibility requirements, responsive behavior.
-             Output as structured markdown."
-      suggested_specializations: ["Design Expert", "UX Designer"]
-
-Wave 2 — "Implementing code" (depends_on: [product_spec, design_spec])
-  └── slot: implementation
-      role: "Implement the feature using the product requirements and design specs
-             provided as upstream context. Follow the design tokens exactly.
-             Satisfy all acceptance criteria. Output working code files."
-      suggested_specializations: ["Frontend Dev", "Backend Dev", "Full-Stack Dev"]
-
-Wave 3 — "Quality review" (depends_on: [product_spec, design_spec, implementation])
-  └── slot: qa_review
-      role: "Review the implementation against the product requirements and design
-             specs. Check: acceptance criteria coverage, edge case handling,
-             accessibility compliance, code quality. Output a QA report with
-             pass/fail per criterion and any issues found."
-      suggested_specializations: ["QA Engineer"]
-
-needs_compile: false  (QA is the final wave — its output + the code files = the artifact)
-```
-
-#### Template: `content_research`
-
-**"Research a topic and produce a written deliverable."**
-
-```
-Wave 1 — "Researching & gathering data"
-  ├── slot: researcher
-  │   role: "Perform web research on the topic defined in the brief. Gather data,
-  │          statistics, competitor information, market trends. Cite all sources
-  │          with URLs. Output a structured research brief."
-  │   suggested_specializations: ["Research Analyst", "Data Analyst"]
-  │
-  └── slot: framework_designer
-      role: "Define the analysis framework: what dimensions to compare, what
-             structure the final document should follow, what questions it must
-             answer. Output as a document outline with section headers and
-             key questions per section."
-      suggested_specializations: ["Product Expert", "Strategy Analyst"]
-
-Wave 2 — "Drafting the deliverable" (depends_on: [researcher, framework_designer])
-  └── slot: writer
-      role: "Write the full deliverable using the research data and the analysis
-             framework. Follow the framework structure exactly. Cite sources from
-             the research. Make it comprehensive but concise."
-      suggested_specializations: ["Content Writer", "Strategy Analyst", "Technical Writer"]
-
-Wave 3 — "Editorial review" (depends_on: [writer])
-  └── slot: editor
-      role: "Review for clarity, consistency, factual accuracy, tone, and
-             completeness. Flag any unsupported claims. Suggest specific
-             improvements. Output the revised document."
-      suggested_specializations: ["Content Writer", "QA Engineer"]
-
-needs_compile: false
-```
-
-#### Template: `simple_prose`
-
-**"Write a document (no research phase needed)."**
-
-```
-Wave 1 — "Writing the deliverable"
-  └── slot: writer
-      role: "Write the deliverable as described in the brief. Follow the goal,
-             target audience, and constraints exactly. Output the complete document."
-      suggested_specializations: ["Content Writer", "Technical Writer"]
-
-Wave 2 — "Editorial review" (depends_on: [writer])
-  └── slot: editor
-      role: "Review for clarity, tone, structure, and completeness. Fix any issues
-             directly — output the final, polished document."
-      suggested_specializations: ["Content Writer", "QA Engineer"]
-
-needs_compile: false
-```
-
-#### Template: `code_bugfix`
-
-**"Fix a bug with product context and QA validation."**
-
-```
-Wave 1 — "Analyzing the bug"
-  └── slot: analyst
-      role: "Analyze the bug description. Define: root cause hypothesis,
-             reproduction steps, fix criteria, regression risk.
-             Output as structured markdown."
-      suggested_specializations: ["Product Expert", "QA Engineer"]
-
-Wave 2 — "Implementing the fix" (depends_on: [analyst])
-  └── slot: fixer
-      role: "Implement the fix based on the analysis. Address the root cause,
-             not just the symptom. Ensure fix criteria are met.
-             Output the changed code files."
-      suggested_specializations: ["Frontend Dev", "Backend Dev", "Full-Stack Dev"]
-
-Wave 3 — "Validating the fix" (depends_on: [analyst, fixer])
-  └── slot: validator
-      role: "Validate the fix against the criteria from the analysis.
-             Check for regressions. Output a pass/fail report."
-      suggested_specializations: ["QA Engineer"]
-
-needs_compile: false
-```
-
-#### Template: `multi_research`
-
-**"Multiple researchers work in parallel, then a compiler merges."**
-
-```
-Wave 1 — "Parallel research tracks"
-  ├── slot: researcher_a
-  │   role: "Research track A as defined in the brief. Focus on your assigned
-  │          dimension. Cite all sources. Output structured findings."
-  │   suggested_specializations: ["Research Analyst"]
-  │
-  └── slot: researcher_b
-      role: "Research track B as defined in the brief. Focus on your assigned
-             dimension. Cite all sources. Output structured findings."
-      suggested_specializations: ["Research Analyst", "Data Analyst"]
-
-Wave 2 — "Compiling & synthesizing" (depends_on: [researcher_a, researcher_b])
-  └── slot: compiler
-      role: "Merge the research from both tracks into a unified, coherent
-             deliverable. Resolve any contradictions. Maintain all citations.
-             Follow the brief's structure requirements."
-      suggested_specializations: ["Strategy Analyst", "Content Writer"]
-
-needs_compile: false  (the compiler IS the final wave)
-```
+| Template ID | Name | Planning Leads | Execution Specialists | Review Leads | `max_iterations` |
+|---|---|---|---|---|---|
+| `full_feature` | Full Product Feature | PM Lead + Design Lead | Backend Dev + Frontend Dev + QA | Tech Lead | 3 |
+| `backend_feature` | Backend Feature | PM Lead + Tech Lead | Backend Dev | Tech Lead | 3 |
+| `frontend_feature` | Frontend Feature | PM Lead + Design Lead | Frontend Dev | Tech Lead + Design Lead | 3 |
+| `bug_fix` | Bug Fix | Tech Lead | Developer | Tech Lead | 2 |
+| `refactor` | Code Refactor | Tech Lead + PM Lead | Developer | Tech Lead | 2 |
+| `security_fix` | Security Fix | Security Lead + Tech Lead | Developer | Security Lead + Tech Lead | 3 |
+| `performance` | Performance Optimization | Tech Lead | Developer | Tech Lead | 2 |
+| `infra_devops` | Infrastructure & DevOps | DevOps Lead + Tech Lead | DevOps Engineer | DevOps Lead + Tech Lead | 3 |
+| `mobile_feature` | Mobile Feature | PM Lead + Design Lead | Mobile Dev + Backend Dev | Tech Lead | 3 |
+| `data_feature` | Data Feature | PM Lead + Data Lead | Data Engineer + Backend Dev | Data Lead + Tech Lead | 3 |
+| `api_integration` | API Integration | PM Lead + Tech Lead | Backend Dev | Tech Lead | 3 |
+| `architecture` | Architecture Change | PM Lead + Tech Lead | Developer | Tech Lead | 3 |
+| `design_system` | Design System | Design Lead + Tech Lead | Frontend Dev | Design Lead + Tech Lead | 3 |
 
 ### 2.4 Adding New Templates
 
 New templates are added as Python modules in `app/agents/dag_templates/`. Each module exports a `DagTemplate` instance. A registry dict maps `template_id → DagTemplate`. The router LLM sees all registered templates.
+
+---
+
+## 2A. Lead-Guided Execution Flow
+
+### 2A.1 Lead vs. Worker Roles
+
+Every agent slot is either a **lead** or a **worker**:
+
+- **Leads** plan, delegate, and review. They do not produce deliverable files during planning/review phases.
+- **Workers** execute: they receive a delegated task brief and produce code files.
+
+Domain-specific lead roles used across templates:
+
+| Lead Role | Responsibility |
+|---|---|
+| Tech Lead | Always present. Technical planning, architecture decisions, final code review. |
+| PM Lead | Requirements, scope, acceptance criteria. Present on most templates. |
+| Design Lead | UI/UX specs, component hierarchy, design tokens. Present on UI-heavy templates. |
+| Security Lead | Threat modelling, security review. Present on `security_fix`. |
+| DevOps Lead | Infrastructure design, deployment review. Present on `infra_devops`. |
+| Data Lead | Data modelling, pipeline design, data review. Present on `data_feature`. |
+
+The `Agent.role` field stores `"lead"` or `"worker"` (default `"worker"`). The router uses this to prefer-match leads to `is_lead: true` slots.
+
+### 2A.2 Three-Phase Execution
+
+Each template executes in three phases:
+
+**Phase 1 — Planning (once per execution)**
+- Lead agents run in parallel.
+- Each lead receives the project brief and their `role_prompt` (static instructions for their domain).
+- Each lead outputs a `## Specialist Delegation` block containing `### <Role Name>` subsections — one per worker they are directing.
+- Leads may use `web_search`, `web_browser`, `vector_search`, and `file_read` during this phase. They do NOT use `file_write`.
+
+**Phase 2 — Execution (loop, up to `max_iterations`)**
+- Worker agents run in parallel (potentially with other workers in the same wave).
+- Each worker's `role_prompt` is replaced by the delegated task extracted from the planning output (see Section 2A.3). Falls back to the static `role_prompt` if no match is found.
+- Workers have full tool access: `file_read`, `file_write`, `web_search`, `web_browser`, `vector_search`, `mcp_*`, `git_clone`, `git_push`.
+
+**Phase 3 — Review (loop, up to `max_iterations`)**
+- Review lead agents run in parallel. They receive worker files pre-populated in their `ExecutionContext.files` (read-only view).
+- Each review lead outputs exactly one of three decisions at the end of their output:
+  - `APPROVE` — output is acceptable. Proceed to finalize.
+  - `MINOR_FIX` — small corrections needed. The lead patches files directly using `file_write` (review leads temporarily enter execution phase for this purpose), then finalize.
+  - `REVISE` — significant rework required. The lead produces per-specialist feedback blocks. The orchestrator re-queues execution waves with this feedback injected.
+
+### 2A.3 Delegation Plan Parsing
+
+After the planning wave completes, the orchestrator parses each lead's text output:
+
+1. Find all `## Specialist Delegation` sections.
+2. Within each section, extract `### <Role Name>` subsections.
+3. For each execution slot in the next wave, match the slot's `suggested_specializations` (case-insensitive substring match) against the extracted role name headings.
+4. If a match is found, inject the matched subsection text as the worker's task brief (replacing `slot.role_prompt` for this iteration).
+5. If no match is found, fall back to `slot.role_prompt` unchanged.
+
+```python
+def extract_delegation_plan(lead_output: str, slot: DagSlot) -> str | None:
+    """Return delegated task text for this slot, or None if no match found."""
+    sections = parse_specialist_delegation_sections(lead_output)
+    for heading, body in sections.items():
+        for spec in slot.suggested_specializations:
+            if spec.lower() in heading.lower():
+                return body.strip()
+    return None
+```
+
+### 2A.4 Review Decision Consensus
+
+When multiple review leads run in parallel, the orchestrator collects all decisions and applies:
+
+> **REVISE > MINOR_FIX > APPROVE**
+
+Any single `REVISE` blocks approval and triggers another execution wave. Any `MINOR_FIX` (with no `REVISE`) causes patch-and-finalize. Only unanimous `APPROVE` finalizes immediately.
+
+### 2A.5 Max Iterations Cap
+
+Each template defines `max_iterations` (see table in Section 2.3). If the execution → review cycle reaches this limit without an `APPROVE`:
+
+- The orchestrator force-finalizes the artifact using the most recent worker output.
+- The artifact moves to `in_review` status regardless of the last review decision.
+- A `[FORCE_FINALIZED: max_iterations reached]` tag is added to the `ArtifactVersion.assumptions` list so the reviewer is informed.
 
 ---
 
@@ -350,7 +312,7 @@ New templates are added as Python modules in `app/agents/dag_templates/`. Each m
 
 A single **Haiku** call that reads the brief, selects the best DAG template, and maps roster agents to template slots.
 
-**Model:** `claude-haiku-4-5-20251001`. Target latency: < 2 seconds.
+**Model:** `settings.MODEL_HAIKU` (currently `claude-haiku-4-5-20251001`). Target latency: < 2 seconds.
 
 ### 3.2 System Prompt
 
@@ -406,16 +368,18 @@ Slots: {[slot.slot_id + " (" + slot.label + ")" for wave in template.waves for s
 
 ```json
 {
-  "template_id": "code_feature",
-  "reasoning": "Brief asks to build a settings page — this is a code feature requiring product specs, design specs, implementation, and QA.",
+  "template_id": "full_feature",
+  "reasoning": "Brief asks to build a settings page — this is a full product feature requiring planning, implementation, and review.",
   "slot_assignments": {
-    "product_spec": { "agent_id": "uuid-product-expert", "agent_name": "Product Expert" },
-    "design_spec": { "agent_id": "uuid-design-expert", "agent_name": "Design Expert" },
-    "implementation": { "agent_id": "uuid-frontend-dev", "agent_name": "Frontend Dev" },
-    "qa_review": { "agent_id": "uuid-qa-engineer", "agent_name": "QA Engineer" }
+    "pm_lead_plan": { "agent_id": "uuid-pm-lead", "agent_name": "PM Lead" },
+    "design_lead_plan": { "agent_id": "uuid-design-lead", "agent_name": "Design Lead" },
+    "backend_dev": { "agent_id": "uuid-backend-dev", "agent_name": "Backend Dev" },
+    "frontend_dev": { "agent_id": "uuid-frontend-dev", "agent_name": "Frontend Dev" },
+    "qa_worker": { "agent_id": "uuid-qa-engineer", "agent_name": "QA Engineer" },
+    "tech_lead_review": { "agent_id": "uuid-tech-lead", "agent_name": "Tech Lead" }
   },
   "estimated_waves": 3,
-  "estimated_cost_usd": 0.85
+  "estimated_cost_usd": 1.20
 }
 ```
 
@@ -424,14 +388,82 @@ Slots: {[slot.slot_id + " (" + slot.label + ")" for wave in template.waves for s
 After the router returns:
 
 1. **Validate** the response: template exists, all slots filled, no parallel conflicts.
-2. **Build the `dag_plan` JSONB** by hydrating the template with assigned agent IDs.
+2. **Build the `dag_plan` JSONB** by hydrating the template with assigned agent IDs. Each wave and slot includes the additional fields described in Section 3.7.
 3. **Build `assembled_team`** — deduplicated list of agent IDs.
 4. **Build `step_labels`** — from template wave labels.
 5. **Filter out agents below readiness gate** (< 50). If a critical slot has an under-ready agent, surface a warning to the user but don't block.
-6. **Return the plan to the user** for confirmation: *"This will be handled by: Product Expert, Design Expert, Frontend Dev, QA Engineer. Template: Code Feature Build. Estimated cost: ~$0.85."*
+6. **Return the plan to the user** for confirmation: *"This will be handled by: PM Lead, Design Lead, Backend Dev, Frontend Dev, QA Engineer, Tech Lead. Template: Full Product Feature. Estimated cost: ~$1.20."*
 7. On user confirmation → create `execution_wave` row → enqueue `execute_artifact_dag` Celery task.
 
-### 3.6 Cost Estimation
+### 3.6 Extended `dag_plan` JSONB Fields
+
+The hydrated `dag_plan` stored in `ExecutionWave.dag_plan` includes these fields in addition to the base template structure:
+
+**Top-level:**
+- `max_iterations` (`integer`) — from the template; controls the execution → review loop cap.
+
+**Per wave:**
+- `wave_type` (`"planning"` | `"execution"` | `"review"`) — drives tool availability and delegation-plan injection logic.
+
+**Per slot:**
+- `is_lead` (`boolean`) — whether this agent slot is a lead or worker.
+- `suggested_specializations` (`list[string]`) — used both for roster matching and for delegation plan section matching.
+
+```json
+{
+  "template_id": "full_feature",
+  "max_iterations": 3,
+  "waves": [
+    {
+      "wave_number": 1,
+      "label": "Planning phase",
+      "wave_type": "planning",
+      "depends_on": [],
+      "slots": [
+        {
+          "slot_id": "pm_lead_plan",
+          "label": "PM Lead — Planning",
+          "is_lead": true,
+          "suggested_specializations": ["PM Lead", "Product Manager"],
+          "agent_id": "uuid-pm-lead"
+        }
+      ]
+    },
+    {
+      "wave_number": 2,
+      "label": "Implementation",
+      "wave_type": "execution",
+      "depends_on": ["pm_lead_plan", "design_lead_plan"],
+      "slots": [
+        {
+          "slot_id": "backend_dev",
+          "label": "Backend Developer",
+          "is_lead": false,
+          "suggested_specializations": ["Backend Dev", "Backend Developer"],
+          "agent_id": "uuid-backend-dev"
+        }
+      ]
+    },
+    {
+      "wave_number": 3,
+      "label": "Review",
+      "wave_type": "review",
+      "depends_on": ["backend_dev", "frontend_dev", "qa_worker"],
+      "slots": [
+        {
+          "slot_id": "tech_lead_review",
+          "label": "Tech Lead — Review",
+          "is_lead": true,
+          "suggested_specializations": ["Tech Lead"],
+          "agent_id": "uuid-tech-lead"
+        }
+      ]
+    }
+  ]
+}
+```
+
+### 3.7 Cost Estimation
 
 The router's `estimated_cost_usd` is a rough estimate based on:
 ```python
@@ -537,21 +569,28 @@ VERY END of user message    │ Project brief + task       │ HIGHEST (recency 
 
 An agent with 7,000 tokens of past learnings will still faithfully follow the current brief because the brief is positioned last. Without this rule, the agent might default to old patterns when the current brief asks for something different.
 
-### 4.4 Output Format Rules (by artifact type and wave role)
+### 4.4 Output Format Rules (by wave role)
+
+> **Scope note:** All artifacts are code artifacts. Prose/content output format rules are not applicable.
 
 Injected into the system message, Section 3:
 
-**For prose artifact slots (writer, editor, compiler):**
+**For planning lead slots:**
 ```
 OUTPUT RULES:
-- Output the deliverable directly. No preamble ("Here is the..."), no
-  meta-commentary ("I'll now write..."), no sign-offs.
-- Use Markdown formatting.
-- If you make an assumption, mark it inline: [ASSUMPTION: <what and why>]
-- If you used a source, cite it inline: [Source: <URL or reference>]
+- Output structured Markdown.
+- Use headers, bullet points, and tables for clarity.
+- Your output will be consumed by downstream worker agents — be precise and specific.
+  Avoid vague language. Provide exact values (API endpoints, data types, file paths,
+  acceptance criteria) rather than descriptions.
+- End your output with a ## Specialist Delegation section containing one
+  ### <Role Name> subsection per worker you are directing. Each subsection must
+  contain a complete, self-contained task brief for that worker.
+- If you make an assumption, mark it: [ASSUMPTION: <what and why>]
+- If you used a source, cite it: [Source: <URL or reference>]
 ```
 
-**For code artifact slots (implementation, fixer):**
+**For execution worker slots (implementation, Developer, Backend Dev, Frontend Dev, etc.):**
 ```
 OUTPUT RULES:
 - Output complete, working code files.
@@ -566,35 +605,27 @@ OUTPUT RULES:
 - Follow the project's tech stack and conventions from the brief context.
 ```
 
-**For analysis/spec slots (product_spec, design_spec, analyst, researcher):**
+**For review lead slots (Tech Lead review, Security Lead review, etc.):**
 ```
 OUTPUT RULES:
-- Output structured Markdown.
-- Use headers, bullet points, and tables for clarity.
-- Your output will be consumed by downstream agents — be precise and specific.
-  Avoid vague language. Provide exact values (hex codes, pixel values, API
-  endpoints) rather than descriptions.
-- If you make an assumption, mark it: [ASSUMPTION: <what and why>]
-- If you used a source, cite it: [Source: <URL or reference>]
-```
-
-**For QA/review slots (qa_review, validator, editor):**
-```
-OUTPUT RULES:
-- If your role is review/QA, output a structured review report AND the
-  corrected deliverable.
-- Use this format:
+- Review all worker output files provided in your context.
+- Output a structured review report.
+- End your output with exactly one of these decision tokens on its own line:
+  APPROVE
+  MINOR_FIX
+  REVISE
+- If MINOR_FIX: describe the specific patches you will make, then apply them via file_write.
+- If REVISE: produce a ## Specialist Feedback section with ### <Role Name> subsections
+  containing targeted revision instructions for each worker that needs to rework their output.
+- Use this report format:
 
 ## Review Report
 | Criterion | Status | Notes |
 |---|---|---|
 | ... | PASS/FAIL | ... |
 
-## Issues Found
-1. [Issue description + location + suggested fix]
-
-## Corrected Output
-{the fixed/improved deliverable}
+## Decision
+APPROVE | MINOR_FIX | REVISE
 ```
 
 ### 4.5 Iteration Prompts
@@ -641,7 +672,7 @@ Agent memory (skills + work learnings from `agent_skills` table) is capped at **
 
 ### 5.2 Token Counting
 
-Token counts are pre-computed on write using a fast tokenizer (Anthropic's `anthropic.count_tokens()` or `tiktoken` as a proxy). Stored in `agent_skills.token_count`.
+Token counts are pre-computed on write using `tiktoken` (`cl100k_base` encoding — close enough to Claude's tokenizer for budget math). Stored in `agent_skills.token_count`.
 
 **Budget check on every skill write:**
 ```python
@@ -741,23 +772,30 @@ All agent tools are exposed via Anthropic's native `tool_use` feature. Each tool
 
 ### 6.2 Tool Availability by Phase
 
-| Tool | Learning | Execution | Reflection |
-|---|---|---|---|
-| `web_search` | Yes | Yes | No |
-| `web_browser` | Yes | Yes | No |
-| `vector_search` | Yes | Yes | No |
-| `file_read` | Yes | Yes | Yes |
-| `file_write` | Yes | Yes | Yes |
-| `mcp_call` | No | Yes | No |
-| `git_clone` | No | Yes | No |
-| `git_push` | No | Yes | No |
+| Tool | Learning | Planning | Execution | Review | Reflection |
+|---|---|---|---|---|---|
+| `file_read` | Yes | Yes | Yes | Yes | Yes |
+| `file_write` | Yes | No | Yes | No | Yes |
+| `web_search` | Yes | Yes | Yes | No | No |
+| `web_browser` | Yes | Yes | Yes | No | No |
+| `vector_search` | Yes | Yes | Yes | No | No |
+| `mcp_*` | No | No | Yes | No | No |
+| `git_clone` | No | No | Yes | No | No |
+| `git_push` | No | No | Yes | No | No |
+
+Notes:
+- **Planning leads** research but do not write files (`file_write` excluded).
+- **Review leads** receive worker files pre-populated in their `ExecutionContext.files` (read-only via `file_read`). `file_write` is excluded unless the review decision is `MINOR_FIX`, in which case the orchestrator re-runs the review lead agent in `execution` phase for the patch step.
+- **Reflection** uses `file_read` and `file_write` for in-process scratchpad work but never touches the web or MCP.
 
 During execution, the orchestrator builds the tool list based on the phase:
 
 ```python
 def get_tools_for_phase(phase: str, workspace_mcp: list, workspace_git: list) -> list[ToolSpec]:
-    base = [file_read_tool, file_write_tool]
-    if phase in ("learning", "execution"):
+    base = [file_read_tool]
+    if phase in ("learning", "planning", "execution", "reflection"):
+        base += [file_write_tool]  # excluded from "review" phase
+    if phase in ("learning", "planning", "execution"):
         base += [web_search_tool, web_browser_tool, vector_search_tool]
     if phase == "execution":
         base += [mcp_tool(conn) for conn in workspace_mcp]
@@ -809,7 +847,7 @@ def get_tools_for_phase(phase: str, workspace_mcp: list, workspace_git: list) ->
 ```json
 {
   "name": "vector_search",
-  "description": "Search uploaded project documents using semantic similarity. Returns the most relevant text chunks.",
+  "description": "Search uploaded documents using semantic similarity. Returns the most relevant text chunks.",
   "input_schema": {
     "type": "object",
     "properties": {
@@ -821,7 +859,7 @@ def get_tools_for_phase(phase: str, workspace_mcp: list, workspace_git: list) ->
 }
 ```
 
-**Executor:** Embeds the query, runs pgvector cosine similarity search on `document_chunks` for the current project. Returns chunks with filename and content.
+**Executor:** Embeds the query via Voyage AI, runs pgvector cosine similarity search on `document_chunks`. Searches **both** project-scoped documents (`d.project_id = :project_id`) and workspace-level context documents (`d.workspace_id = :workspace_id`) in a single `OR` query. During the learning phase, only `workspace_id` is available; during execution, both scopes are searched. Returns chunks with filename and content.
 
 #### `file_read` / `file_write`
 
@@ -860,7 +898,7 @@ Dynamically generated per MCP connection:
 
 ### 6.4 Agent Execution Loop
 
-Using Anthropic's native messages API with `tool_use`:
+Using Anthropic's native messages API with `tool_use`. A `tool_executor` dispatch function is provided by the caller (built by `create_tool_executor()` in `tools/registry.py`):
 
 ```python
 async def run_agent(
@@ -868,52 +906,60 @@ async def run_agent(
     user_message: str,
     tools: list[ToolSpec],
     model: str,
+    *,
+    tool_executor: ToolExecutor | None = None,
     max_iterations: int = 15,
     max_tokens: int = 8192,
 ) -> AgentResult:
     messages = [{"role": "user", "content": user_message}]
+    written_files: dict[str, str] = {}
     total_input_tokens = 0
     total_output_tokens = 0
 
     for i in range(max_iterations):
-        response = await anthropic.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            system=system_prompt,
-            messages=messages,
-            tools=[t.to_anthropic() for t in tools],
-        )
+        # API call retries 429/529 with 1s/2s/4s backoff (_call_api_with_retry)
+        response = await _call_api_with_retry(client, model, max_tokens, system_prompt, messages, tools)
         total_input_tokens += response.usage.input_tokens
         total_output_tokens += response.usage.output_tokens
 
         if response.stop_reason == "end_turn":
-            # Agent is done — extract final text
             result_text = extract_text_blocks(response.content)
             return AgentResult(
                 text=result_text,
-                files=collect_written_files(),
+                files=written_files,
                 input_tokens=total_input_tokens,
                 output_tokens=total_output_tokens,
+                assumptions=extract_assumptions(result_text),
+                sources=extract_sources(result_text),
             )
 
         if response.stop_reason == "tool_use":
-            # Execute all tool calls, append results, continue loop
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
-                    tool = find_tool(block.name, tools)
-                    result = await tool.execute(block.input)
+                    result = await tool_executor(block.name, block.input)
+                    # Intercept file_write to collect written files
+                    if block.name == "file_write":
+                        written_files[block.input["path"]] = block.input["content"]
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
-                        "content": str(result),
+                        "content": result,
                     })
             messages.append({"role": "assistant", "content": response.content})
             messages.append({"role": "user", "content": tool_results})
 
-    # Max iterations reached — return whatever we have
     raise AgentMaxIterationError(f"Agent did not complete in {max_iterations} iterations")
 ```
+
+**Transient error retry:** each `_call_api_with_retry` call retries on `429 RateLimitError` and `529 overloaded` with delays of 1s, 2s, 4s before propagating the exception. Non-transient errors (400, 401) raise immediately.
+
+**`AgentResult` fields:**
+- `text`: Final extracted text
+- `files`: Dict of `{path: content}` from `file_write` tool calls
+- `input_tokens` / `output_tokens`: Cumulative across all iterations
+- `assumptions`: Extracted `[ASSUMPTION: ...]` and `[TBD: ...]` tags (flat list of strings)
+- `sources`: Extracted `[Source: ...]` citation tags (flat list of strings)
 
 ---
 
@@ -958,21 +1004,20 @@ ALWAYS prefer completing the work with assumptions over leaving gaps.
 After each agent completes, the orchestrator extracts assumptions from the output text:
 
 ```python
-import re
-
 ASSUMPTION_PATTERN = re.compile(r'\[ASSUMPTION:\s*(.+?)\]', re.IGNORECASE)
 TBD_PATTERN = re.compile(r'\[TBD:\s*(.+?)\]', re.IGNORECASE)
 
-def extract_assumptions(text: str, agent_name: str) -> list[dict]:
-    assumptions = []
+def extract_assumptions(text: str) -> list[str]:
+    """Returns a flat list of strings. TBD entries prefixed with 'TBD — '."""
+    results = []
     for match in ASSUMPTION_PATTERN.finditer(text):
-        assumptions.append({"text": match.group(1).strip(), "agent": agent_name})
+        results.append(match.group(1).strip())
     for match in TBD_PATTERN.finditer(text):
-        assumptions.append({"text": f"TBD — {match.group(1).strip()}", "agent": agent_name})
-    return assumptions
+        results.append(f"TBD — {match.group(1).strip()}")
+    return results
 ```
 
-These are stored in `artifact_versions.assumptions` JSONB and displayed in the review sidebar.
+The orchestrator adds `{"text": assumption_text, "agent": agent_name}` context when building the `ArtifactVersion.assumptions` JSONB list. These are stored in `artifact_versions.assumptions` and displayed in the review sidebar.
 
 ---
 
@@ -1215,30 +1260,60 @@ When an agent is created (onboarding or manual add), it enters `learning` status
 ### 11.2 Learning Task
 
 ```
-Task: execute_agent_learning(agent_id: str)
+Task: execute_agent_learning(agent_id: str, topic: str | None = None)
 
-Lifecycle:
-1. Load agent from DB
+When topic is None → full workspace-context onboarding (Section 11.2 below).
+When topic is set → targeted research on that topic (Section 11.4).
+
+Lifecycle (full onboarding, topic=None):
+1. Load agent + workspace from DB
 2. Set agent.status = 'learning'
 3. Build learning prompt:
    - System: "You are {agent.name}, a {agent.specialization}. You are in your
      onboarding phase. Your goal is to build foundational knowledge about your
      domain so you can execute tasks effectively."
-   - User: "Research your specialization in the context of this company:
-     {workspace.domain_description}. Tech stack: {workspace.tech_stack}.
+   - User: Full workspace context passed as structured sections:
+     Company name, Domain/Industry, Product (if set), Company stage (if set),
+     Target audience (if set), Goals (if set), Existing team (if set), Tech stack.
+     Optional fields are only included when non-null — absent fields are omitted
+     entirely rather than shown as "Not specified".
 
-     Produce a core skills document covering:
-     - Key concepts and best practices in your domain
-     - Common patterns and conventions for this tech stack
+     Prompt asks the agent to produce a core skills document covering:
+     - Key concepts and best practices in the domain
+     - Specific considerations for the company's product, audience, and goals
+     - Common patterns and conventions for the tech stack
      - Industry standards and quality benchmarks
-
-     Use web_search and web_browser to research. Be thorough but concise.
-     Output your findings as a structured markdown document."
-4. Run agent loop with tools: [web_search, web_browser, file_write]
+4. Run agent loop with tools: [file_read, file_write, web_search, web_browser, vector_search],
+   max_iterations=30
+   - If AgentMaxIterationError is raised (loop exhausted), treat as partial success:
+     save whatever output was accumulated and continue to step 5. Agent still becomes
+     'ready'. Do NOT fail the task — a partial knowledge base is better than none.
 5. Parse output → create agent_skills row(s) with category = 'skill'
 6. Compute readiness score
 7. Set agent.status = 'ready', agent.readiness_score = computed score
 ```
+
+### 11.4 Targeted Learning (Topic-Specific Research)
+
+When `topic` is provided to `execute_agent_learning`, a shorter, focused prompt replaces the full onboarding prompt. This is triggered by the user clicking "Research" on an agent's profile and entering a topic (e.g., "React Server Components").
+
+```
+System: "You are {agent.name}, a {agent.specialization}. You are conducting
+targeted research to expand your knowledge on a specific topic."
+
+User: "Research the following topic in the context of your specialization
+and company:
+
+Topic: {topic}
+Your specialization: {agent.specialization}
+Company: {company_name}
+Domain: {domain_description}
+Tech stack: {tech_stack}
+
+Produce a concise, actionable skills document on this topic..."
+```
+
+Same tools and flow as full onboarding, but appends a new `agent_skills` row (category = `skill`) rather than replacing existing knowledge.
 
 ### 11.3 Project Briefing
 
@@ -1280,12 +1355,12 @@ A compile step is added to the DAG **only** when a wave has ≥ 2 slots whose ou
 
 ### 12.2 When NOT to Compile
 
-If the DAG is linear (each wave has one slot) or the final wave has a single agent, that agent's output IS the artifact. No compile step needed.
+If the DAG's final review wave has a single lead agent, that agent's output (and any patched files) IS the artifact. No compile step needed.
 
 **Examples:**
-- `content_research`: Wave 2 has one `writer` → Wave 3 has one `editor`. The editor's output is the artifact. No compile.
-- `code_feature`: Wave 2 has one `implementation` → Wave 3 has one `qa_review`. The QA agent outputs the corrected code + report. The code files are the artifact. No compile.
-- `multi_research`: Wave 1 has two parallel `researcher` slots → Wave 2 has one `compiler`. The compiler merges both. `needs_compile = false` because the compiler IS the final wave — it's built into the template structure, not bolted on.
+- `bug_fix`: Wave 1 (Tech Lead plan) → Wave 2 (Developer execute) → Wave 3 (Tech Lead review). The review lead's output + patched files are the artifact. No compile.
+- `full_feature`: Wave 1 (PM Lead + Design Lead plan) → Wave 2 (Backend Dev + Frontend Dev + QA execute) → Wave 3 (Tech Lead review). The review lead coordinates the merge. No separate compile step.
+- If a future template produces parallel outputs across multiple unrelated tracks that must be structurally merged, `needs_compile = true` and a compiler slot is added as a fourth wave.
 
 ### 12.3 Compile Slot Prompt
 
@@ -1309,7 +1384,7 @@ Rules:
 
 ## 13. End-to-End Execution Flow
 
-Tying all sections together. This is the complete lifecycle of a single `execute_artifact_dag` Celery task:
+Tying all sections together. This is the complete lifecycle of a single `execute_artifact_dag` Celery task with lead-guided execution:
 
 ```
 1. LOAD
@@ -1318,47 +1393,63 @@ Tying all sections together. This is the complete lifecycle of a single `execute
    ├── Load Project (published brief)
    └── Set wave.status = 'running'
 
-2. FOR EACH WAVE in dag_plan.waves (sequentially):
+2. PLANNING PHASE (wave_type = "planning", runs once)
    │
-   ├── 2a. Update heartbeat (wave.current_step, cost)
+   ├── 2a. Update heartbeat (current_step = "Planning...", cost)
    │
-   ├── 2b. FOR EACH SLOT in wave (concurrently via asyncio.gather):
-   │   │
-   │   ├── Load Agent from DB (name, specialization, system_prompt, model_tier)
-   │   ├── Load Agent Memory (skills + work_learnings from agent_skills table)
-   │   ├── Build Upstream Context (from wave_outputs dict, 15k cap)
-   │   ├── Build Tools List (phase = 'execution', include MCP + Git if configured)
-   │   │
-   │   ├── Assemble Prompt:
-   │   │   ├── SYSTEM: role + auto-assume + output format rules
-   │   │   └── USER:  skills → learnings → upstream → project brief → artifact brief → task
-   │   │              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-   │   │              Recency Bias Rule: current task is ALWAYS LAST
-   │   │
-   │   ├── Run Agent Loop (Anthropic messages API with tool_use, max 15 iterations)
-   │   ├── Extract Assumptions ([ASSUMPTION: ...] tags)
-   │   ├── Extract Sources ([Source: ...] tags)
-   │   ├── Collect Written Files (from file_write tool calls)
-   │   └── Accumulate Token Usage + Cost
+   ├── 2b. FOR EACH LEAD SLOT in planning wave (concurrently via asyncio.gather):
+   │   ├── Load Agent, Memory, Tools (phase = 'planning': file_read + web + vector)
+   │   ├── Assemble Prompt (recency bias order; output format = planning lead rules)
+   │   ├── Run Agent Loop (max 15 tool iterations)
+   │   └── Store lead output in wave_outputs (slot_id → WaveOutput)
    │
-   ├── 2c. Store wave outputs in memory (slot_id → WaveOutput)
-   │
-   └── 2d. CHECK CIRCUIT BREAKER
-       └── If running_cost > artifact.max_budget_usd → ABORT
+   └── 2c. Parse delegation plans from all lead outputs (Section 2A.3)
 
-3. COMPILE (if template.needs_compile)
+3. EXECUTION → REVIEW LOOP (up to dag_plan.max_iterations times)
+   │
+   ├── 3a. EXECUTION WAVE (wave_type = "execution")
+   │   ├── Update heartbeat (current_step = "Implementing...", cost)
+   │   ├── FOR EACH WORKER SLOT (concurrently via asyncio.gather):
+   │   │   ├── Load Agent, Memory, Tools (phase = 'execution': all tools)
+   │   │   ├── Inject delegation plan as task brief (fallback to role_prompt)
+   │   │   ├── If iteration > 1: inject REVISE feedback from previous review
+   │   │   ├── Assemble Prompt (recency bias order; output format = worker rules)
+   │   │   ├── Run Agent Loop (max 15 tool iterations)
+   │   │   └── Collect written files + store in wave_outputs
+   │   └── CHECK CIRCUIT BREAKER: running_cost > max_budget_usd → ABORT
+   │
+   ├── 3b. REVIEW WAVE (wave_type = "review")
+   │   ├── Update heartbeat (current_step = "Reviewing...", cost)
+   │   ├── FOR EACH REVIEW LEAD SLOT (concurrently via asyncio.gather):
+   │   │   ├── Load Agent, Memory, Tools (phase = 'review': file_read only)
+   │   │   ├── Pre-populate ExecutionContext.files with all worker output files
+   │   │   ├── Assemble Prompt (recency bias order; output format = review lead rules)
+   │   │   ├── Run Agent Loop (max 15 tool iterations)
+   │   │   └── Extract decision token (APPROVE / MINOR_FIX / REVISE)
+   │   │
+   │   ├── Compute consensus decision (REVISE > MINOR_FIX > APPROVE)
+   │   │
+   │   ├── If APPROVE → EXIT LOOP → go to step 4
+   │   ├── If MINOR_FIX → re-run review leads with phase = 'execution' for patch step
+   │   │                   → EXIT LOOP → go to step 4
+   │   └── If REVISE → extract per-specialist feedback → continue loop (increment iteration)
+   │
+   └── 3c. If iteration == max_iterations and not APPROVE/MINOR_FIX:
+           → FORCE FINALIZE (tag [FORCE_FINALIZED: max_iterations reached])
+
+4. COMPILE (if template.needs_compile)
    └── Run compile agent with all upstream outputs
 
-4. FINALIZE
+5. FINALIZE
    ├── Merge all file outputs across waves (later wave wins on conflict)
    ├── Upload files to S3: artifacts/{artifact_id}/v{version}/{filepath}
    ├── Create ArtifactVersion row (file_manifest, costs, assumptions, sources)
    ├── Update Artifact (status = 'in_review', current_version++, total_cost_usd)
-   ├── For code artifacts: push to git branch, create/update PR
+   ├── Push to git branch, create/update PR
    ├── Update ExecutionWave (status = 'completed', costs, timestamps)
    └── Update Workspace.monthly_spend_usd (atomic increment)
 
-5. ERROR PATH (if any step fails after retries)
+6. ERROR PATH (if any step fails after retries)
    ├── ExecutionWave.status = 'failed', error_message = reason
    ├── Artifact stays in 'drafting' with error surfaced to user
    └── No ArtifactVersion created (clean failure — no partial artifacts)
@@ -1368,17 +1459,24 @@ Tying all sections together. This is the complete lifecycle of a single `execute
 
 ## 14. Verification Checklist
 
-- [ ] Sufficiency check returns valid JSON with `eligible`, `score`, and `issues` array within 4 seconds (Sonnet)
+- [ ] Sufficiency check returns valid JSON with `eligible`, `score`, and `issues` array within 4 seconds (Sonnet). For lead-structured templates, the check is advisory; lead review cycle is the primary gate.
 - [ ] Router call selects correct template AND maps agents to slots in one Haiku call within 2 seconds
-- [ ] All 5 MVP DAG templates are registered and the router can select each one given appropriate briefs
+- [ ] All 13 DAG templates are registered and the router can select each one given appropriate briefs
+- [ ] `dag_plan` JSONB includes `max_iterations`, `wave_type` per wave, and `is_lead` + `suggested_specializations` per slot
 - [ ] Prompt assembly follows the exact recency bias order: system → [skills, learnings] → upstream → project brief → artifact brief → task
+- [ ] Planning leads produce `## Specialist Delegation` → `### <Role Name>` sections; orchestrator parses and injects these as worker task briefs
+- [ ] Workers fall back to static `role_prompt` when no delegation plan match is found
+- [ ] Review leads output one of APPROVE / MINOR_FIX / REVISE; orchestrator applies consensus (REVISE > MINOR_FIX > APPROVE)
+- [ ] MINOR_FIX re-runs review leads in execution phase (file_write enabled) for patching
+- [ ] REVISE extracts per-specialist feedback and re-queues execution wave; iteration counter increments
+- [ ] Force-finalize triggers at `max_iterations`; `[FORCE_FINALIZED: max_iterations reached]` tag is stored in `ArtifactVersion.assumptions`
+- [ ] Tool availability is correctly gated by phase: planning (no file_write, no MCP/git), review (file_read only), execution (all tools)
 - [ ] Agent skills + work learnings stay within 8,000 token budget; compaction triggers when ceiling is approached
 - [ ] Compaction produces smaller output than input and preserves specific, hard-won knowledge
 - [ ] Auto-assume rule is present in every agent's system prompt; assumptions are extracted via regex and stored in ArtifactVersion
 - [ ] Upstream context injection respects the 15,000 token cap with middle-out truncation
-- [ ] Tool availability is correctly gated by phase (no MCP during learning, no web_search during reflection)
 - [ ] Reflection extracts new insights and cautions, removes obsolete skills, and respects the FOR UPDATE lock
 - [ ] Knowledge readiness score computes correctly: 40 (skills) + 30 (briefing) + 20 (onboarding) + 10 (learnings) = 100
 - [ ] Initial learning phase produces skill entries and transitions agent from `learning` to `ready`
 - [ ] Iteration prompt correctly injects previous version + user feedback and produces a targeted update
-- [ ] End-to-end: brief → sufficiency check → route → execute DAG → S3 upload → ArtifactVersion → status transition
+- [ ] End-to-end: brief → sufficiency check → route → planning → execution → review loop → S3 upload → ArtifactVersion → status transition

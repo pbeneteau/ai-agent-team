@@ -21,6 +21,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from sqlalchemy.exc import IntegrityError
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -413,6 +415,112 @@ class TestWebhookEdgeCases:
                 )
             # Should still return 200 — webhook handler logs and discards
             assert resp.status_code == 200
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_duplicate_webhook_skipped_no_celery_task(self) -> None:
+        """Duplicate webhook (same external_comment_id) hits IntegrityError on flush.
+
+        The handler must:
+        - Return 200 (webhook contract: always ack)
+        - NOT enqueue a Celery execution wave task
+        - Call db.rollback() (session remains usable)
+
+        This exercises the full IntegrityError deduplication path in
+        _create_comment_and_iterate, not just the outer handler mock.
+        """
+        artifact = make_artifact(artifact_id="art-dedup-1", status="in_review")
+        artifact.git_pr_number = 77
+        artifact.project_id = "proj-dedup"
+        artifact.title = "Dedup Test Feature"
+        artifact.goal = "Test dedup"
+        artifact.description = "Test description"
+        artifact.artifact_type = "code"
+
+        version = make_artifact_version(artifact_id="art-dedup-1", version_number=1)
+
+        payload = {
+            "action": "created",
+            "pull_request": {"number": 77},
+            "comment": {
+                "id": 55555,  # same comment ID on second delivery → duplicate
+                "body": "Please fix the null check in line 42",
+                "path": "src/controllers/auth.ts",
+                "position": 42,
+            },
+        }
+        body = json.dumps(payload).encode()
+
+        execute_call_index = 0
+        rollback_called = False
+
+        class DedupMockSession:
+            async def execute(self, stmt: object) -> MagicMock:
+                nonlocal execute_call_index
+                execute_call_index += 1
+                mock_result = MagicMock()
+                if execute_call_index == 1:
+                    # _find_artifact_by_pr — returns the artifact
+                    mock_result.scalar_one_or_none.return_value = artifact
+                else:
+                    # latest ArtifactVersion lookup
+                    mock_result.scalar_one_or_none.return_value = version
+                return mock_result
+
+            def add(self, obj: object) -> None:
+                pass
+
+            async def flush(self) -> None:
+                raise IntegrityError(
+                    "INSERT INTO contextual_comments ...",
+                    {},
+                    Exception("duplicate key value violates unique constraint"),
+                )
+
+            async def rollback(self) -> None:
+                nonlocal rollback_called
+                rollback_called = True
+
+            async def commit(self) -> None:
+                pass
+
+            async def __aenter__(self) -> "DedupMockSession":
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                pass
+
+        client = TestClient(app, raise_server_exceptions=False)
+        try:
+            with (
+                patch(
+                    "app.api.routes.webhooks._verify_github_signature",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ),
+                patch(
+                    "app.api.routes.webhooks.async_session_maker",
+                    return_value=DedupMockSession(),
+                ),
+                patch(
+                    "app.api.routes.webhooks.execute_artifact_dag",
+                ) as mock_celery,
+            ):
+                resp = client.post(
+                    "/api/webhooks/github",
+                    content=body,
+                    headers={
+                        "X-GitHub-Event": "pull_request_review_comment",
+                        "X-Hub-Signature-256": github_signature(body),
+                        "Content-Type": "application/json",
+                    },
+                )
+
+            assert resp.status_code == 200
+            assert mock_celery.delay.call_count == 0, (
+                "Celery task must NOT be enqueued for a duplicate webhook"
+            )
+            assert rollback_called, "db.rollback() must be called on IntegrityError"
         finally:
             app.dependency_overrides.clear()
 

@@ -208,6 +208,7 @@ def make_agent(
     agent.readiness_score = readiness_score
     agent.progression_level = "apprenti"
     agent.model_tier = "sonnet"
+    agent.role = "worker"
     agent.tools = []
     agent.completed_artifacts = 3
     agent.avg_quality_score = Decimal("0.85")
@@ -408,34 +409,42 @@ def mock_sufficiency_with_issues() -> dict:
 def mock_routing_result() -> MagicMock:
     """Deterministic routing result for delegate operations."""
     result = MagicMock()
-    result.template_key = "simple_prose"
+    result.template_key = "bug_fix"
     result.dag_plan = {
         "waves": [
             {
                 "wave_number": 1,
-                "label": "Research & Draft",
+                "label": "Planning",
+                "wave_type": "planning",
                 "slots": [
-                    {"slot_id": "researcher", "agent_id": "a1", "agent_name": "Research Analyst"},
-                    {"slot_id": "writer", "agent_id": "a2", "agent_name": "Content Writer"},
+                    {"slot_id": "tech_plan", "agent_id": "a1", "agent_name": "Tech Lead"},
                 ],
             },
             {
                 "wave_number": 2,
-                "label": "QA & Compilation",
+                "label": "Implementation",
+                "wave_type": "execution",
                 "slots": [
-                    {"slot_id": "qa", "agent_id": "a3", "agent_name": "QA Engineer"},
+                    {"slot_id": "dev_impl", "agent_id": "a2", "agent_name": "Backend Dev"},
+                ],
+            },
+            {
+                "wave_number": 3,
+                "label": "Review",
+                "wave_type": "review",
+                "slots": [
+                    {"slot_id": "tech_review", "agent_id": "a1", "agent_name": "Tech Lead"},
                 ],
             },
         ],
     }
     result.assembled_team = [
-        {"agent_id": "a1", "agent_name": "Research Analyst"},
-        {"agent_id": "a2", "agent_name": "Content Writer"},
-        {"agent_id": "a3", "agent_name": "QA Engineer"},
+        {"agent_id": "a1", "agent_name": "Tech Lead"},
+        {"agent_id": "a2", "agent_name": "Backend Dev"},
     ]
-    result.step_labels = ["Research & Draft", "QA & Compilation"]
+    result.step_labels = ["Planning", "Implementation", "Review"]
     result.estimated_cost = Decimal("0.42")
-    result.reasoning = "Simple prose template selected for document artifact."
+    result.reasoning = "Bug fix template selected."
     result.warnings = []
     result.is_fallback = False
     return result
@@ -444,44 +453,48 @@ def mock_routing_result() -> MagicMock:
 def mock_code_routing_result() -> MagicMock:
     """Deterministic routing result for code artifacts."""
     result = MagicMock()
-    result.template_key = "code_feature"
+    result.template_key = "full_feature"
     result.dag_plan = {
         "waves": [
             {
                 "wave_number": 1,
-                "label": "Requirements & Design",
+                "label": "Planning",
+                "wave_type": "planning",
                 "slots": [
-                    {"slot_id": "product", "agent_id": "a1", "agent_name": "Product Expert"},
-                    {"slot_id": "design", "agent_id": "a2", "agent_name": "Design Expert"},
+                    {"slot_id": "pm_plan", "agent_id": "a1", "agent_name": "PM Lead"},
+                    {"slot_id": "design_plan", "agent_id": "a2", "agent_name": "Design Lead"},
                 ],
             },
             {
                 "wave_number": 2,
                 "label": "Implementation",
+                "wave_type": "execution",
                 "slots": [
-                    {"slot_id": "frontend", "agent_id": "a3", "agent_name": "Frontend Dev"},
-                    {"slot_id": "backend", "agent_id": "a4", "agent_name": "Backend Dev"},
+                    {"slot_id": "backend_impl", "agent_id": "a3", "agent_name": "Backend Dev"},
+                    {"slot_id": "frontend_impl", "agent_id": "a4", "agent_name": "Frontend Dev"},
+                    {"slot_id": "qa_impl", "agent_id": "a5", "agent_name": "QA Engineer"},
                 ],
             },
             {
                 "wave_number": 3,
-                "label": "QA & Testing",
+                "label": "Review",
+                "wave_type": "review",
                 "slots": [
-                    {"slot_id": "qa", "agent_id": "a5", "agent_name": "QA Engineer"},
+                    {"slot_id": "tech_review", "agent_id": "a1", "agent_name": "Tech Lead"},
                 ],
             },
         ],
     }
     result.assembled_team = [
-        {"agent_id": "a1", "agent_name": "Product Expert"},
-        {"agent_id": "a2", "agent_name": "Design Expert"},
-        {"agent_id": "a3", "agent_name": "Frontend Dev"},
-        {"agent_id": "a4", "agent_name": "Backend Dev"},
+        {"agent_id": "a1", "agent_name": "PM Lead"},
+        {"agent_id": "a2", "agent_name": "Design Lead"},
+        {"agent_id": "a3", "agent_name": "Backend Dev"},
+        {"agent_id": "a4", "agent_name": "Frontend Dev"},
         {"agent_id": "a5", "agent_name": "QA Engineer"},
     ]
-    result.step_labels = ["Requirements & Design", "Implementation", "QA & Testing"]
+    result.step_labels = ["Planning", "Implementation", "Review"]
     result.estimated_cost = Decimal("0.84")
-    result.reasoning = "Code feature template selected for code artifact."
+    result.reasoning = "Full feature template selected for code artifact."
     result.warnings = []
     result.is_fallback = False
     return result

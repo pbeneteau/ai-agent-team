@@ -30,6 +30,7 @@ from app.api.schemas.artifacts import (
     ExecutionStatus,
     IterateRequest,
     IterateResponse,
+    RetryResponse,
     StandaloneSufficiencyRequest,
     SufficiencyIssueSchema,
     SufficiencyResponse,
@@ -310,6 +311,17 @@ async def artifact_status(
         )
         wave = result.scalar_one_or_none()
         if wave:
+            estimated_remaining: int | None = None
+            if (
+                wave.started_at is not None
+                and wave.current_step > 0
+                and wave.total_steps > wave.current_step
+            ):
+                elapsed = (datetime.now(timezone.utc) - wave.started_at).total_seconds()
+                avg_per_step = elapsed / wave.current_step
+                remaining_steps = wave.total_steps - wave.current_step
+                estimated_remaining = max(0, int(avg_per_step * remaining_steps))
+
             execution = ExecutionStatus(
                 wave_id=wave.id,
                 current_step=wave.current_step,
@@ -317,7 +329,7 @@ async def artifact_status(
                 step_labels=wave.step_labels or [],
                 cost_usd=float(wave.cost_usd),
                 started_at=wave.started_at,
-                estimated_remaining_seconds=None,
+                estimated_remaining_seconds=estimated_remaining,
             )
 
     return ArtifactStatusResponse(
@@ -587,6 +599,70 @@ async def cancel_artifact(
         id=artifact.id,
         status=artifact.status,
         cancelled_at=artifact.cancelled_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/artifacts/{id}/retry — re-queue a failed execution
+# ---------------------------------------------------------------------------
+
+
+@router.post("/artifacts/{artifact_id}/retry", status_code=202, response_model=RetryResponse)
+async def retry_artifact(
+    artifact_id: str,
+    workspace_id: str = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> RetryResponse:
+    """Re-queue execution for an artifact whose last wave failed.
+
+    Creates a new ExecutionWave (trigger=retry) from the failed wave's dag_plan.
+    Only valid when artifact.status == 'drafting' and a failed wave exists.
+    """
+    artifact = await _get_artifact_or_404(artifact_id, db)
+
+    if artifact.status != "drafting":
+        raise validation_error(
+            f"Cannot retry artifact in '{artifact.status}' status. "
+            "Only 'drafting' artifacts with a failed execution can be retried."
+        )
+
+    # Check monthly budget
+    workspace = await db.get(Workspace, workspace_id)
+    if workspace and float(workspace.monthly_spend_usd) >= float(workspace.monthly_budget_usd):
+        raise budget_exceeded("Monthly budget ceiling reached.")
+
+    # Find the most recent failed wave to copy the dag_plan from
+    result = await db.execute(
+        select(ExecutionWave)
+        .where(ExecutionWave.artifact_id == artifact_id)
+        .where(ExecutionWave.status == "failed")
+        .order_by(ExecutionWave.created_at.desc())
+        .limit(1)
+    )
+    failed_wave = result.scalar_one_or_none()
+    if failed_wave is None:
+        raise validation_error("No failed execution wave found for this artifact.")
+
+    wave = ExecutionWave(
+        id=str(uuid.uuid4()),
+        artifact_id=artifact_id,
+        trigger="retry",
+        dag_plan=failed_wave.dag_plan,
+        assembled_team=failed_wave.assembled_team,
+        status="queued",
+        total_steps=failed_wave.total_steps,
+        step_labels=failed_wave.step_labels,
+    )
+    db.add(wave)
+    await db.flush()
+
+    from app.core.celery_app import execute_artifact_dag
+    execute_artifact_dag.delay(wave.id)
+
+    return RetryResponse(
+        artifact_id=artifact.id,
+        execution_wave_id=wave.id,
+        status="drafting",
     )
 
 

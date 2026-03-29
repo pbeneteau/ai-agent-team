@@ -168,80 +168,83 @@ async def process_document(document_id: str) -> None:
     5. Insert document_chunks
     6. Update document status
     """
-    from app.core.database import async_session_maker
+    from app.core.database import async_session_maker, engine
     from app.core.s3_workspace import download_document
     from app.models.document import Document
     from app.models.document_chunk import DocumentChunk
 
-    async with async_session_maker() as db_session:
-        try:
-            # Load document
-            doc = await db_session.get(Document, document_id)
-            if doc is None:
-                logger.error("Document %s not found", document_id)
-                return
-
-            # Update status to processing
-            doc.processing_status = "processing"
-            await db_session.flush()
-
-            # Download from S3
-            file_bytes = download_document(doc.id, doc.filename)
-
-            # Extract text
-            text = extract_text(file_bytes, doc.mime_type, doc.filename)
-            if not text.strip():
-                doc.processing_status = "ready"
-                doc.chunk_count = 0
-                await db_session.commit()
-                return
-
-            # Chunk
-            chunks = chunk_text(text)
-            if not chunks:
-                doc.processing_status = "ready"
-                doc.chunk_count = 0
-                await db_session.commit()
-                return
-
-            # Embed
-            embeddings = await compute_embeddings(chunks)
-
-            # Insert chunks
-            for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-                db_chunk = DocumentChunk(
-                    id=str(uuid.uuid4()),
-                    document_id=document_id,
-                    chunk_index=i,
-                    content=chunk,
-                    token_count=count_tokens(chunk),
-                    embedding=embedding,
-                )
-                db_session.add(db_chunk)
-
-            # Update document
-            doc.chunk_count = len(chunks)
-            doc.processing_status = "ready"
-
-            await db_session.commit()
-
-            logger.info(
-                "Document %s processed: %d chunks from %s",
-                document_id,
-                len(chunks),
-                doc.filename,
-            )
-
-        except Exception:
-            await db_session.rollback()
-            # Mark as failed
+    try:
+        async with async_session_maker() as db_session:
             try:
+                # Load document
                 doc = await db_session.get(Document, document_id)
-                if doc:
-                    doc.processing_status = "failed"
+                if doc is None:
+                    logger.error("Document %s not found", document_id)
+                    return
+
+                # Update status to processing
+                doc.processing_status = "processing"
+                await db_session.flush()
+
+                # Download from S3
+                file_bytes = download_document(doc.id, doc.filename)
+
+                # Extract text
+                text = extract_text(file_bytes, doc.mime_type, doc.filename)
+                if not text.strip():
+                    doc.processing_status = "ready"
+                    doc.chunk_count = 0
+                    await db_session.commit()
+                    return
+
+                # Chunk
+                chunks = chunk_text(text)
+                if not chunks:
+                    doc.processing_status = "ready"
+                    doc.chunk_count = 0
+                    await db_session.commit()
+                    return
+
+                # Embed
+                embeddings = await compute_embeddings(chunks)
+
+                # Insert chunks
+                for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+                    db_chunk = DocumentChunk(
+                        id=str(uuid.uuid4()),
+                        document_id=document_id,
+                        chunk_index=i,
+                        content=chunk,
+                        token_count=count_tokens(chunk),
+                        embedding=embedding,
+                    )
+                    db_session.add(db_chunk)
+
+                # Update document
+                doc.chunk_count = len(chunks)
+                doc.processing_status = "ready"
+
                 await db_session.commit()
-            except Exception:
-                logger.exception(
-                    "Failed to mark document %s as failed", document_id,
+
+                logger.info(
+                    "Document %s processed: %d chunks from %s",
+                    document_id,
+                    len(chunks),
+                    doc.filename,
                 )
-            raise
+
+            except Exception:
+                await db_session.rollback()
+                # Mark as failed
+                try:
+                    doc = await db_session.get(Document, document_id)
+                    if doc:
+                        doc.processing_status = "failed"
+                    await db_session.commit()
+                except Exception:
+                    logger.exception(
+                        "Failed to mark document %s as failed", document_id,
+                    )
+                raise
+    finally:
+        await engine.dispose()

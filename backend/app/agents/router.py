@@ -100,6 +100,9 @@ class RosterAgent(Protocol):
     def status(self) -> str: ...
 
     @property
+    def role(self) -> str: ...
+
+    @property
     def archived_at(self) -> Any: ...
 
 
@@ -151,8 +154,13 @@ your job is to:
 Rules:
 - Match agents to slots based on their specialization. Pick the agent whose
   specialization is closest to the slot's suggested_specializations.
+- CRITICAL — lead/worker matching:
+  Slots marked is_lead=true are for strategic leads (planning, delegation, review).
+  Assign ONLY agents with role=lead to is_lead=true slots.
+  Assign agents with role=worker to is_lead=false (execution) slots.
+  If no worker matches an execution slot, use the best available agent.
 - Every slot MUST be filled. If no agent closely matches a slot, assign the
-  most general-purpose agent available.
+  most general-purpose agent with the correct role.
 - Never assign the same agent to two slots in the same wave (parallel conflict).
   An agent CAN appear in different waves (sequential is safe).
 - If a slot has no good match at all, set agent_id to null — the system will
@@ -215,6 +223,7 @@ def format_roster_for_router(agents: list[RosterAgent]) -> str:
     for agent in eligible:
         lines.append(
             f"- id: {agent.id} | name: {agent.name} "
+            f"| role: {agent.role} "
             f"| specialization: {agent.specialization} "
             f"| readiness: {agent.readiness_score} "
             f"| progression: {agent.progression_level}"
@@ -261,20 +270,26 @@ def _build_dag_plan(
     template: DagTemplate,
     slot_assignments: dict[str, dict[str, str | None]],
 ) -> dict[str, Any]:
-    """Hydrate the template into the ``dag_plan`` JSONB schema (TDD-02 Section 3.3).
+    """Hydrate the template into the ``dag_plan`` JSONB schema.
 
     Produces::
 
         {
+          "template_id": "...",
+          "needs_compile": false,
+          "max_iterations": 3,
           "waves": [
             {
               "wave_number": 1,
               "label": "...",
+              "wave_type": "planning",
               "agents": [
                 {
                   "agent_id": "uuid-...",
                   "role_in_wave": "...",
                   "output_key": "slot_id",
+                  "is_lead": true,
+                  "suggested_specializations": ["Tech Lead", "..."],
                   "depends_on": ["other_slot_id"]
                 }
               ]
@@ -291,6 +306,9 @@ def _build_dag_plan(
                 "agent_id": assignment.get("agent_id"),
                 "role_in_wave": slot.role_prompt,
                 "output_key": slot.slot_id,
+                "label": slot.label,
+                "is_lead": slot.is_lead,
+                "suggested_specializations": list(slot.suggested_specializations),
             }
             if wave.depends_on:
                 agent_entry["depends_on"] = list(wave.depends_on)
@@ -299,11 +317,13 @@ def _build_dag_plan(
         waves.append({
             "wave_number": wave.wave_number,
             "label": wave.label,
+            "wave_type": wave.wave_type,
             "agents": agents_in_wave,
         })
     return {
         "template_id": template.template_id,
         "needs_compile": template.needs_compile,
+        "max_iterations": template.max_iterations,
         "waves": waves,
     }
 
@@ -400,6 +420,70 @@ def _validate_haiku_response(
 
 
 # ---------------------------------------------------------------------------
+# Lead-slot enforcement (post-processing)
+# ---------------------------------------------------------------------------
+
+
+def _enforce_lead_assignments(
+    slot_assignments: dict[str, dict[str, str | None]],
+    template: "DagTemplate",
+    eligible: list[RosterAgent],
+) -> tuple[dict[str, dict[str, str | None]], list[str]]:
+    """Ensure lead slots get lead agents and execution slots get worker agents.
+
+    Haiku is instructed to respect roles, but may occasionally mismatch. This
+    function corrects any mismatches by substituting the best-matching agent
+    with the correct role.
+
+    Returns (corrected_assignments, substitution_warnings).
+    """
+    agent_lookup: dict[str, RosterAgent] = {a.id: a for a in eligible}
+    leads = [a for a in eligible if a.role == "lead"]
+    workers = [a for a in eligible if a.role == "worker"]
+
+    corrected = dict(slot_assignments)
+    warnings: list[str] = []
+
+    for wave in template.waves:
+        for slot in wave.slots:
+            assignment = corrected.get(slot.slot_id, {})
+            if not isinstance(assignment, dict):
+                continue
+
+            agent_id = assignment.get("agent_id")
+            if agent_id is None:
+                continue
+
+            agent = agent_lookup.get(agent_id)
+            if agent is None:
+                continue
+
+            if slot.is_lead and agent.role != "lead":
+                # Substitute with best lead (prefer highest readiness)
+                if leads:
+                    # Avoid parallel conflict: exclude leads already in this wave
+                    wave_ids_used = {
+                        corrected.get(s.slot_id, {}).get("agent_id")
+                        for s in wave.slots
+                        if s.slot_id != slot.slot_id
+                    }
+                    candidates = [a for a in leads if a.id not in wave_ids_used]
+                    if not candidates:
+                        candidates = leads  # parallel conflict unavoidable
+                    best_lead = max(candidates, key=lambda a: a.readiness_score)
+                    warnings.append(
+                        f"Slot '{slot.slot_id}': substituted worker agent '{agent.name}' "
+                        f"with lead agent '{best_lead.name}' (is_lead slot requires lead role)"
+                    )
+                    corrected[slot.slot_id] = {
+                        "agent_id": best_lead.id,
+                        "agent_name": best_lead.name,
+                    }
+
+    return corrected, warnings
+
+
+# ---------------------------------------------------------------------------
 # Fallback
 # ---------------------------------------------------------------------------
 
@@ -408,40 +492,40 @@ def _build_fallback_result(
     agents: list[RosterAgent],
     reason: str,
 ) -> RoutingResult:
-    """Produce a ``simple_prose`` fallback when Haiku fails or returns garbage.
+    """Produce a ``bug_fix`` fallback when Haiku fails or returns garbage.
 
-    Picks the highest-readiness eligible agent.  If no eligible agents exist,
-    uses ``None`` as the agent_id (the orchestrator will use a generic agent).
+    Uses the simplest lead-structured template. Picks the best lead agent for
+    planning/review slots and the best worker for the execution slot. Falls
+    back to any available agent if no role-specific agents exist.
     """
-    template = get_template("simple_prose")
+    template = get_template("bug_fix")
     eligible = _filter_eligible_agents(agents)
 
-    if eligible:
-        best = max(eligible, key=lambda a: a.readiness_score)
-        agent_id: str | None = best.id
-        agent_name: str = best.name
-    else:
-        agent_id = None
-        agent_name = "Generic Agent"
-        # Fall back even further: include all non-archived agents
-        non_archived = [a for a in agents if a.archived_at is None]
-        if non_archived:
-            best_any = max(non_archived, key=lambda a: a.readiness_score)
-            agent_id = best_any.id
-            agent_name = best_any.name
+    # If no eligible agents, try non-archived
+    if not eligible:
+        eligible = [a for a in agents if a.archived_at is None]
 
-    # Assign the single agent to all slots in simple_prose.
+    leads = [a for a in eligible if a.role == "lead"]
+    workers = [a for a in eligible if a.role == "worker"]
+
+    best_lead = max(leads, key=lambda a: a.readiness_score) if leads else (
+        max(eligible, key=lambda a: a.readiness_score) if eligible else None
+    )
+    best_worker = max(workers, key=lambda a: a.readiness_score) if workers else best_lead
+
     slot_assignments: dict[str, dict[str, str | None]] = {}
     for wave in template.waves:
         for slot in wave.slots:
+            if slot.is_lead:
+                agent = best_lead
+            else:
+                agent = best_worker
             slot_assignments[slot.slot_id] = {
-                "agent_id": agent_id,
-                "agent_name": agent_name,
+                "agent_id": agent.id if agent else None,
+                "agent_name": agent.name if agent else "Generic Agent",
             }
 
-    model_tier = "sonnet"
-    if eligible:
-        model_tier = best.model_tier  # type: ignore[union-attr]
+    model_tier = best_lead.model_tier if best_lead else "sonnet"
 
     return RoutingResult(
         template_key=template.template_id,
@@ -449,7 +533,7 @@ def _build_fallback_result(
         assembled_team=_build_assembled_team(slot_assignments),
         step_labels=_build_step_labels(template),
         estimated_cost=estimate_cost(template, model_tier),
-        reasoning=f"Fallback to simple_prose: {reason}",
+        reasoning=f"Fallback to bug_fix: {reason}",
         warnings=[f"Using fallback: {reason}"],
         is_fallback=True,
     )
@@ -476,7 +560,7 @@ async def route_brief(
     Returns:
         ``RoutingResult`` with the hydrated DAG plan, assembled team, cost
         estimate, and Haiku's reasoning.  On any failure, returns a
-        ``simple_prose`` fallback.
+        ``bug_fix`` fallback.
     """
     eligible = _filter_eligible_agents(roster_agents)
     if not eligible:
@@ -519,6 +603,13 @@ async def route_brief(
     slot_assignments: dict[str, dict[str, str | None]] = parsed["slot_assignments"]
     reasoning: str = parsed.get("reasoning", "")
 
+    # Enforce lead/worker role constraints (substitute any mismatches).
+    slot_assignments, enforcement_warnings = _enforce_lead_assignments(
+        slot_assignments, template, eligible
+    )
+    if enforcement_warnings:
+        logger.info("Lead-slot enforcement applied: %s", enforcement_warnings)
+
     dag_plan = _build_dag_plan(template, slot_assignments)
     assembled_team = _build_assembled_team(slot_assignments)
     step_labels = _build_step_labels(template)
@@ -527,8 +618,8 @@ async def route_brief(
     model_tier = _dominant_model_tier(slot_assignments, eligible)
     estimated_cost = estimate_cost(template, model_tier)
 
-    # Readiness warnings (TDD-03 Section 3.5, step 5).
-    warnings = _readiness_warnings(slot_assignments, eligible)
+    # Readiness + enforcement warnings.
+    warnings = _readiness_warnings(slot_assignments, eligible) + enforcement_warnings
 
     return RoutingResult(
         template_key=template_id,

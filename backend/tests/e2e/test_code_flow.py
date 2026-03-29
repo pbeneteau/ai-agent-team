@@ -281,7 +281,7 @@ class TestCodeArtifactCreation:
             assert resp.status_code == 200
             data = resp.json()
             assert data["status"] == "drafting"
-            assert data["plan"]["template_id"] == "code_feature"
+            assert data["plan"]["template_id"] == "full_feature"
             assert mock_celery.delay.called
         finally:
             _teardown()

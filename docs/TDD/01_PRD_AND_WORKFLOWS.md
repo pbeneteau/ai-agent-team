@@ -15,7 +15,9 @@
 
 ### What It Is
 
-An **AI-powered autonomous agency** for knowledge work and code. Users describe what they need in a structured brief, a cross-functional team of specialized AI agents collaborates to produce the deliverable, and the user reviews and iterates on the output through version-controlled diffs.
+An **AI-powered autonomous agency** for code work. Users describe what they need in a structured brief, a cross-functional team of specialized AI agents collaborates to produce the deliverable, and the user reviews and iterates on the output through version-controlled diffs.
+
+> **Current focus:** Code artifacts only. Prose/content/research artifact types are out of scope for the current implementation. The architecture supports multiple artifact types, but only code is actively developed and tested.
 
 ### Core Value Proposition
 
@@ -93,7 +95,7 @@ Unlike single-agent AI tools (Cursor, ChatGPT, Devin) that work in isolation, th
 |---|---|
 | **Roster** | The user's persistent pool of specialized AI agents. Created during onboarding, customizable over time. Global scope — agents are shared across all projects. |
 | **Agent** | A persistent AI entity with a specialization (e.g., "Product Expert", "Frontend Dev"), an isolated workspace, accumulated skills, and a learning profile. Agents are NOT disposable — they persist across projects and accumulate institutional knowledge. |
-| **Agent Status** | `learning` → `ready` → `working` → `reflecting`. An agent must reach at least `partial` readiness before it can be auto-assembled into an execution team. |
+| **Agent Status** | `learning` → `ready` → `working` → `reflecting`. An agent must reach at least `partial` readiness before it can be auto-assembled into an execution team. Agents are set to `working` for the duration of each DAG slot and returned to `ready` when the slot completes. |
 | **Progression Level** | `apprenti` (< 5 artifacts) → `opérationnel` (5-20 artifacts) → `expert` (20+ with high quality). Reflects the agent's maturity. |
 | **Project** | A container for related work (e.g., "Q3 Product Launch", "Client A Website Redesign"). Has a published brief/context that all agents are briefed on. |
 | **Artifact** | The core entity — a deliverable. Can be prose (markdown report, strategy doc) or code (feature implementation, API endpoint). One Artifact = one or many files (like a GitHub PR). Status: `Drafting` → `In Review` → `Approved` (+ `Cancelled`). |
@@ -101,8 +103,10 @@ Unlike single-agent AI tools (Cursor, ChatGPT, Devin) that work in isolation, th
 | **Brief** | The structured input a user provides to request a deliverable. Contains: Title, Goal, Target Audience, Context, Description. Must pass the Sufficiency Check before execution begins. |
 | **Sufficiency Check** | A pre-flight LLM call that validates a brief for completeness and clarity. Triggered on "Validate" or "Delegate" click — not on every keystroke. Blocks submission if critical issues are found. |
 | **ExecutionWave** | The invisible backend unit of work. Contains the DAG plan, the auto-assembled team (selected from the roster), agent assignments, and cost tracking. Produces one ArtifactVersion. |
-| **DAG (Directed Acyclic Graph)** | The execution plan that determines which agents run in parallel (same wave) and which run sequentially (agents that depend on upstream outputs). Enables cross-functional collaboration. |
+| **DAG (Directed Acyclic Graph)** | The execution plan that determines which agents run in parallel (same wave) and which run sequentially (agents that depend on upstream outputs). Enables cross-functional collaboration. DAG templates now define three wave types: **planning** (leads analyze the brief and produce delegation plans), **execution** (workers implement their delegated tasks), and **review** (leads evaluate worker output and emit APPROVE / MINOR_FIX / REVISE decisions). |
 | **ContextualComment** | A piece of user feedback tied to a specific text range within a specific ArtifactVersion. Triggers a targeted iteration — the agent rewrites only the highlighted section. |
+| **Lead** | A roster agent with `role="lead"`. Leads plan work (analyze brief, produce delegation plan), delegate tasks to worker specialists, and review the outputs (`APPROVE` / `MINOR_FIX` / `REVISE`). Domain-specific: Tech Lead, PM Lead, Design Lead, Security Lead, DevOps Lead, Data Lead, Mobile Lead. |
+| **Worker** | A roster agent with `role="worker"`. Workers execute the tasks delegated to them by leads and produce code files. |
 | **Auto-Assembly** | The system's ability to read a brief and automatically select the right agents from the roster to form a team. Users can override but rarely need to. |
 | **Auto-Resolution** | Agents never pause for human input during execution. They make safe assumptions, log them visibly, and continue. Users can override assumptions during review. |
 
@@ -118,8 +122,8 @@ Unlike single-agent AI tools (Cursor, ChatGPT, Devin) that work in isolation, th
 
 | Step | Screen / Action | System Behavior |
 |---|---|---|
-| 1 | **Welcome screen** — "Tell us about your company." | Displays a clean form: Company Name, Domain/Industry, Tech Stack (optional), Team Size, Primary Use Case (content, code, or both). |
-| 2 | User fills in: *"B2B SaaS startup. Project management tool. Next.js + FastAPI + PostgreSQL. 3 people. Both code and content."* | — |
+| 1 | **Welcome screen** — "Tell us about your company." | Displays a form: Company Name, Domain/Industry, Product Description, Company Stage, Target Audience, Main Goals, Existing Team Roles, Tech Stack, Team Size, Primary Use Case (content, code, or both), and optional context document uploads. |
+| 2 | User fills in: *"B2B SaaS startup. Project management tool for engineers. Next.js + FastAPI + PostgreSQL. 3 people. Both code and content."* and optionally uploads a product spec or README. | — |
 | 3 | User clicks **"Generate My Agency"** | Backend sends company context to LLM. LLM generates a tailored roster of 6-10 specialized agents based on the user's domain, stack, and use case. |
 | 4 | **Roster Preview screen** — Shows the generated roster organized by category. | Displays each agent's name, specialization, and a one-line description. Categories: Product & Strategy, Engineering, Content & Research, Quality & Design. |
 | 5 | User reviews the roster. Can: **rename** agents, **adjust** specializations (e.g., change "Content Writer" to "Technical Writer"), **add** custom agents (e.g., "Legal Compliance Reviewer"), or **remove** roles they don't need. | UI provides inline editing. Add Agent button opens a form: Name, Specialization, Description. |
@@ -145,9 +149,9 @@ Unlike single-agent AI tools (Cursor, ChatGPT, Devin) that work in isolation, th
 | 4 | User clicks **"Validate"** | Frontend sends the complete brief to `POST /api/briefs/sufficiency-check`. Backend runs a fast LLM call (< 3 seconds). |
 | 5a | **If issues found:** UI displays inline issues with highlighted problem areas. | Example: *"Missing constraint: What time period for pricing data? Current or historical?"* The issue appears next to the relevant field with a yellow/red indicator. `critical` issues block submission. `warning` issues are advisory. |
 | 5b | User fixes the flagged issues. Clicks **"Validate"** again. | New sufficiency check. If all critical issues resolved → green checkmark. |
-| 6 | User clicks **"Delegate to Team"** | Backend: (1) Auto-assembles team from roster based on brief content. (2) Shows a confirmation: *"This will be handled by: Research Analyst, Strategy Analyst, Content Writer. Estimated cost: ~$0.65."* User can override team selection. |
+| 6 | User clicks **"Delegate to Team"** | Backend: (1) Auto-assembles team from roster based on brief content. (2) Shows a confirmation listing the assembled agents and an estimated cost (based on template heuristics). User can override team selection. |
 | 7 | User confirms delegation. | Artifact status → `Drafting`. Backend builds the DAG and begins execution. |
-| 8 | **Heartbeat UI** — User sees high-level progress. | Steps displayed as human-readable labels mapped from DAG waves. Example: `Step 1/3: Researching competitors... ✅ Done` → `Step 2/3: Drafting analysis... ⏳ Now` → `Step 3/3: QA & compilation ○ Next`. Real-time cost counter. Estimated time remaining. |
+| 8 | **Heartbeat UI** — User sees high-level progress. | Steps displayed as human-readable labels mapped from DAG waves. Example: `Step 1/3: Researching competitors... ✅ Done` → `Step 2/3: Drafting analysis... ⏳ Now` → `Step 3/3: QA & compilation ○ Next`. Real-time cost counter. Estimated time remaining computed from elapsed time per step × remaining steps. |
 | 9 | Execution completes. User receives notification: **"Deliverable Ready for Review."** | Artifact status → `In Review`. |
 | 10 | **Review screen** — User opens the artifact. | Main panel: the full document (v1) rendered as rich text/markdown. Sidebar: **Sources** (URLs, documents the agents referenced), **Assumptions** (any decisions agents made autonomously, e.g., `[ASSUMPTION: US market only]`), **Cost** (total tokens and USD for this execution). |
 | 11 | User reads the document. Wants changes to a specific section. | — |
@@ -168,8 +172,11 @@ Unlike single-agent AI tools (Cursor, ChatGPT, Devin) that work in isolation, th
 | Step | Screen / Action | System Behavior |
 |---|---|---|
 | 1-7 | **Identical to J2** (Smart Brief → Validate → Delegate → Confirm). | Same flow. The brief form may include code-specific fields: Target Repository, Base Branch, Tech Stack (pre-filled from project/onboarding context). |
-| 8 | **Heartbeat UI** — Same as J2 but with code-relevant step labels. | Example: `Step 1/4: Product Agent defining requirements... ✅` → `Step 2/4: Design Agent creating component specs... ✅` → `Step 3/4: Code Agent implementing... ⏳` → `Step 4/4: QA Agent validating... ○` |
-| 9 | Execution completes. | **Divergence from J2:** The backend pushes the code to a **feature branch** on the connected GitHub/GitLab repository and opens a **Pull Request**. Artifact status → `In Review`. |
+| 8 | **Heartbeat UI** — Same as J2 but with code-relevant step labels reflecting the three wave types. | **Planning phase (leads):** `Step 1/N: Tech Lead analyzing brief... ✅` → `Step 2/N: PM Lead producing delegation plan... ✅` → **Execution phase (workers):** `Step 3/N: Backend Dev implementing tasks... ⏳` → **Review phase (leads):** `Step N/N: Tech Lead reviewing output... ○`. The review cycle may repeat up to `max_iterations` times before force-finalize. |
+| 8a | *(Internal — not visible to user)* **Planning phase:** Leads run first, analyzing the brief and producing a structured delegation plan via `## Specialist Delegation` sections. | Each lead agent writes which worker should handle which task with specific instructions. The orchestrator extracts these plans and injects them into each worker's prompt. |
+| 8b | *(Internal)* **Execution phase:** Workers receive their delegated tasks from the planning phase and implement code files. | Workers produce files written into the artifact's S3 prefix. |
+| 8c | *(Internal)* **Review phase:** Lead agents read all worker-produced files and emit a decision: `APPROVE`, `MINOR_FIX`, or `REVISE`. | `APPROVE` → finalize. `MINOR_FIX` → lead patches files directly with `file_write`. `REVISE` → per-specialist feedback extracted and injected for the next iteration loop. Multiple review leads run in parallel; consensus is `REVISE > MINOR_FIX > APPROVE`. |
+| 9 | Execution completes (all leads approve or max_iterations reached). | **Divergence from J2:** The backend pushes the code to a **feature branch** on the connected GitHub/GitLab repository and opens a **Pull Request**. Artifact status → `In Review`. |
 | 10 | User receives notification: **"Deliverable Ready for Review."** | The review screen shows: artifact metadata (title, cost, assumptions, sources) + a prominent **"View Pull Request on GitHub"** button linking to the PR. For code artifacts, there is NO in-app diff viewer — the user reviews code on GitHub/GitLab. |
 | 11 | User clicks the link and reviews the PR on GitHub/GitLab. | Standard GitHub PR experience: multi-file diff, syntax highlighting, inline comments, CI checks. |
 | 12a | **If the user leaves a PR comment on GitHub/GitLab:** | A webhook listener on the backend detects the PR comment/review event. The backend automatically triggers a targeted iteration — the relevant agent rewrites the flagged code. The system pushes an updated commit to the same PR branch. Artifact status briefly cycles: `Drafting` → `In Review`. |
@@ -199,10 +206,10 @@ Unlike single-agent AI tools (Cursor, ChatGPT, Devin) that work in isolation, th
 | | | **History tab:** List of completed artifacts with quality indicators and dates. |
 | | | **Knowledge tab:** Readiness score breakdown, knowledge recommendations (system-suggested research actions to fill gaps). |
 | 4 | **Customize specialization:** User edits the specialization field. | E.g., changes "Content Writer" to "Technical Documentation Writer". This adjusts the agent's system prompt and future auto-assembly matching. |
-| 5 | **View knowledge recommendations:** System has identified gaps. | Example: *"This agent should research React Server Components — 3 recent briefs referenced RSC but the agent has no indexed knowledge."* Two buttons: **Apply** (triggers background web research) or **Dismiss**. |
-| 6 | **Trigger manual research:** User clicks **"Research a Topic"** and types a topic. | E.g., *"WCAG 2.2 accessibility guidelines."* The agent enters `learning` status and performs autonomous web research. Returns to `ready` when complete. |
+| 5 | **View knowledge recommendations:** System has identified gaps. | Example: *"This agent should research React Server Components — 3 recent briefs referenced RSC but the agent has no indexed knowledge."* Two buttons: **Apply** (triggers targeted background research on the topic) or **Dismiss**. Recommendations are computed on-the-fly via a Haiku LLM call comparing recent workspace artifacts against the agent's current skill titles. |
+| 6 | **Trigger manual research:** User clicks **"Research a Topic"** and types a topic. | E.g., *"WCAG 2.2 accessibility guidelines."* The topic is forwarded to the learning task as a targeted research prompt. The agent enters `learning` status, researches the specific topic (not a full workspace re-onboarding), and returns to `ready` when complete. |
 | 7 | **Add a new agent:** User clicks **"Add Agent"** on the Roster Overview. | Form: Name, Specialization, Description. System creates the agent, enters `learning` phase. |
-| 8 | **Archive an agent:** User clicks **"Archive"** on an agent card. | Soft removal — agent is hidden from the active roster and excluded from auto-assembly. All accumulated skills and learning are preserved. The agent can be restored later with its full knowledge intact. |
+| 8 | **Archive an agent:** User clicks **"Archive"** on an agent card. | Soft removal — agent is hidden from the active roster and excluded from auto-assembly. All accumulated skills and learning are preserved. The agent can be restored via `POST /api/roster/{id}/restore`. |
 | 9 | **Hard delete an agent:** User clicks **"Delete Permanently"** (requires confirmation). | Permanently removes the agent and all associated data (skills, learnings, workspace). Irreversible. Only available from the archive or via a danger-zone confirmation. |
 
 ---
@@ -235,9 +242,9 @@ Unlike single-agent AI tools (Cursor, ChatGPT, Devin) that work in isolation, th
 | Step | Screen / Action | System Behavior |
 |---|---|---|
 | **Git Providers** | | |
-| 1 | User clicks **"Connect GitHub"** (or GitLab). | Initiates OAuth flow. User authorizes access to their repositories. |
-| 2 | Connection established. | User selects which repositories the product can push to. All code artifacts within any project can target these repos. |
-| 3 | User can test the connection (verifies push access). | Backend attempts a test operation and reports success/failure. |
+| 1 | User clicks **"Connect GitHub"** (or GitLab). | User pastes a **Personal Access Token (PAT)**. No OAuth flow — AD-14 locks PAT-only for MVP. The backend validates the token immediately and stores it encrypted. |
+| 2 | Connection established. | The connection is workspace-scoped. The target repository URL is specified per code artifact (in the Smart Brief). |
+| 3 | User can test the connection. | Backend calls the provider API with the stored PAT and reports success/failure. |
 | **MCP Connections** | | |
 | 4 | User clicks **"Add MCP Connection"**. | Form: Connection Name, Server URL, Authentication (API key, OAuth). MCP = Model Context Protocol — allows agents to call external tools (Notion, Slack, custom APIs). |
 | 5 | User adds a Notion connection. | Backend discovers available tools on the MCP server. User sees: *"Available tools: read_page, create_page, search."* |
@@ -315,9 +322,9 @@ Unlike single-agent AI tools (Cursor, ChatGPT, Devin) that work in isolation, th
 
 | Scenario | System Behavior |
 |---|---|
-| An agent fails mid-execution (LLM error, API timeout) | The execution engine retries the failed agent up to 3 times with exponential backoff. If all retries fail, the artifact status remains `Drafting` with an error banner: *"Execution failed at Step 3/4. Error: [reason]. You can retry or cancel."* |
-| The entire execution wave times out (configurable ceiling, e.g., 15 minutes) | Artifact is marked with an error state within `Drafting`. User is notified: *"Execution timed out. This may indicate an overly complex brief. You can retry or simplify the brief."* |
-| Orphaned artifact — stuck in `Drafting` with no active execution process (e.g., after server crash) | A background reaper detects artifacts in `Drafting` with no active worker for > 5 minutes. The artifact is marked with an error state. User is notified and can retry. |
+| An agent fails mid-execution (LLM error, API timeout) | The failed slot is retried up to 3 times with exponential backoff (2s, 4s, 8s). If all retries fail, the DAG execution fails, the wave status → `failed`, and the artifact remains in `Drafting`. The user can retry via `POST /api/artifacts/{id}/retry`, which creates a new `ExecutionWave` from the failed wave's DAG plan. |
+| The entire execution wave times out (10-minute soft limit) | The Celery soft time limit fires. Wave status → `failed` with `error_message = "Execution timed out"`. Artifact remains in `Drafting`. User can retry via `POST /api/artifacts/{id}/retry`. |
+| Orphaned artifact — stuck in `Drafting` with no active execution process (e.g., after server crash) | A background reaper (`reap_orphaned_waves`) runs every 2 minutes and marks waves stuck in `running` for > 10 minutes as `failed`. The artifact remains in `Drafting` with a failed wave. |
 
 ### 6.3 Cost Ceiling Hit
 
@@ -332,8 +339,8 @@ Unlike single-agent AI tools (Cursor, ChatGPT, Devin) that work in isolation, th
 |---|---|
 | Push to feature branch fails (auth expired, repo deleted, branch conflict) | Artifact stays in `Drafting` with an error: *"Failed to push to GitHub: [reason]."* User is prompted to check their Git connection in Settings. Retry button available. |
 | PR creation fails | Same as above. The code artifact still has its files stored in S3 — the user can download them manually as a fallback. |
-| Webhook delivery fails (GitHub doesn't send the event) | Backend polls for PR status changes as a fallback (configurable interval). If a PR comment is missed, the user can manually trigger iteration from the in-app review screen. |
-| PR merge event not detected | Backend polls for merge status. If the merge is confirmed via polling, artifact status transitions to `Approved`. If polling fails, the user can manually click "Mark as Approved" in the app. |
+| Webhook delivery fails (GitHub doesn't send the event) | If a PR comment is missed, the user can manually submit feedback through the in-app review screen to trigger iteration. **Note:** Backend webhook polling fallback is not implemented. |
+| PR merge event not detected | The user can manually click "Approve" in the in-app review screen to transition the artifact to `Approved`. **Note:** Automatic polling for merge status is not implemented. |
 
 ### 6.5 Agent Not Ready
 

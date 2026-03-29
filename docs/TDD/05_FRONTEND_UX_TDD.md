@@ -207,45 +207,51 @@ The Zustand UI store exposes `theme` and `setTheme`. The `ThemeProvider` compone
 
 ```
 app/
-├── layout.tsx                    # Root layout: providers, sidebar, theme
+├── layout.tsx                    # Root layout: ThemeProvider, QueryProvider, WebSocketProvider, Toaster
 ├── page.tsx                      # Redirect → /projects (or /onboarding if first visit)
+├── not-found.tsx                 # 404 page
 │
-├── onboarding/
-│   └── page.tsx                  # J1: First-time onboarding flow
+├── (onboarding)/
+│   └── onboarding/
+│       └── page.tsx              # J1: First-time onboarding flow
 │
-├── projects/
-│   ├── layout.tsx                # Projects shell: sidebar nav context
-│   ├── page.tsx                  # Project list (dashboard)
-│   │
-│   └── [projectId]/
-│       ├── layout.tsx            # Project-scoped layout: project name, tabs
-│       ├── page.tsx              # Artifact list for this project
-│       ├── brief/
-│       │   └── page.tsx          # Project brief editor (draft/publish)
-│       ├── documents/
-│       │   └── page.tsx          # Project document management
-│       └── artifacts/
-│           ├── new/
-│           │   └── page.tsx      # J2/J3: Smart Brief form (new deliverable)
-│           └── [artifactId]/
-│               ├── page.tsx      # Artifact detail (heartbeat OR review)
-│               └── versions/
-│                   └── [version]/
-│                       └── page.tsx  # Specific version view + diff
-│
-├── roster/
-│   ├── page.tsx                  # J4: Agency Roster overview grid
-│   └── [agentId]/
-│       └── page.tsx              # Agent detail (profile, skills, history)
-│
-├── settings/
-│   ├── page.tsx                  # Settings shell → redirect to first tab
-│   ├── git/
-│   │   └── page.tsx              # J6: Git provider connections
-│   ├── mcp/
-│   │   └── page.tsx              # J6: MCP connections
-│   └── usage/
-│       └── page.tsx              # J6: Usage & cost tracking + budget
+└── (app)/                        # Main app shell (Sidebar + TopBar)
+    ├── layout.tsx                # App shell: Sidebar + TopBar + main content area
+    ├── loading.tsx               # Shared loading skeleton
+    ├── error.tsx                 # Shared error boundary
+    │
+    ├── projects/
+    │   ├── page.tsx              # Project list (dashboard)
+    │   │
+    │   └── [projectId]/
+    │       ├── layout.tsx        # Project-scoped layout: project name, tabs
+    │       ├── page.tsx          # Artifact list for this project
+    │       ├── brief/
+    │       │   └── page.tsx      # Project brief editor (draft/publish)
+    │       ├── documents/
+    │       │   └── page.tsx      # Project document management
+    │       └── artifacts/
+    │           ├── new/
+    │           │   └── page.tsx  # J2/J3: Smart Brief form (new deliverable)
+    │           └── [artifactId]/
+    │               └── page.tsx  # Artifact detail (heartbeat OR review; version switching in-page)
+    │
+    ├── roster/
+    │   ├── page.tsx              # J4: Agency Roster overview grid
+    │   └── [agentId]/
+    │       └── page.tsx          # Agent detail (profile, skills, history)
+    │
+    └── settings/
+        ├── layout.tsx            # Settings shell: tab navigation
+        ├── page.tsx              # Redirect to first tab (/settings/workspace)
+        ├── workspace/
+        │   └── page.tsx          # J5: Workspace context + workspace documents
+        ├── git/
+        │   └── page.tsx          # J6: Git provider connections
+        ├── mcp/
+        │   └── page.tsx          # J6: MCP connections
+        └── usage/
+            └── page.tsx          # J6: Usage & cost tracking + budget
 │
 └── api/
     └── [...proxy]/               # Optional: API proxy for development (rewrites to backend)
@@ -253,30 +259,53 @@ app/
 
 ### 3.2 Root Layout
 
+The layout is split across two files following Next.js App Router route group conventions.
+
+**`app/layout.tsx`** — wraps all routes (app + onboarding) with providers and global UI:
+
 ```tsx
 // app/layout.tsx
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
       <body>
+        {/* Skip-to-content link (accessibility) */}
         <ThemeProvider>
-          <QueryClientProvider>
+          <QueryProvider>
             <WebSocketProvider>
-              <div className="flex h-screen">
-                <Sidebar />
-                <main className="flex-1 overflow-y-auto">
-                  {children}
-                </main>
-              </div>
-              <NotificationToast />
+              {children}
+              <Toaster position="bottom-right" richColors /> {/* sonner */}
             </WebSocketProvider>
-          </QueryClientProvider>
+          </QueryProvider>
         </ThemeProvider>
       </body>
     </html>
   );
 }
 ```
+
+**`app/(app)/layout.tsx`** — wraps only the main app routes with the navigation shell:
+
+```tsx
+// app/(app)/layout.tsx
+export default function AppLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex h-screen overflow-hidden">
+      <div className="hidden md:block">
+        <Sidebar />
+      </div>
+      <div className="flex flex-1 flex-col overflow-hidden">
+        <TopBar />
+        <main id="main-content" className="flex-1 overflow-y-auto p-4 sm:p-6">
+          {children}
+        </main>
+      </div>
+    </div>
+  );
+}
+```
+
+The `(onboarding)` group does not inherit the app shell — onboarding pages render full-screen without sidebar or top bar.
 
 ### 3.3 Sidebar Navigation
 
@@ -478,10 +507,20 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 ### 5.2 API Module Organization
 
+Each domain has its own file (`lib/api/roster.ts`, `lib/api/artifacts.ts`, etc.) and is re-exported from `lib/api/index.ts` as a unified `api` object. The structure below shows the full method surface.
+
 ```typescript
 // lib/api/index.ts
 export const api = {
   onboarding: { create: (data) => request("/onboarding", { method: "POST", body: JSON.stringify(data) }) },
+
+  workspace: {
+    get:            () => request("/workspace"),
+    update:         (data) => request("/workspace", { method: "PATCH", body: JSON.stringify(data) }),
+    listDocuments:  () => request("/workspace/documents"),
+    uploadDocument: (formData) => request("/workspace/documents", { method: "POST", body: formData }),
+    deleteDocument: (docId) => request(`/workspace/documents/${docId}`, { method: "DELETE" }),
+  },
 
   roster: {
     list:           (params?) => request(`/roster?${qs(params)}`),
@@ -489,6 +528,7 @@ export const api = {
     create:         (data) => request("/roster", { method: "POST", body: JSON.stringify(data) }),
     update:         (id, data) => request(`/roster/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
     archive:        (id) => request(`/roster/${id}`, { method: "DELETE" }),
+    restore:        (id) => request(`/roster/${id}/restore`, { method: "POST" }),
     deletePermanent: (id) => request(`/roster/${id}/permanent`, { method: "DELETE" }),
     getSkills:      (id, category?) => request(`/roster/${id}/skills?${qs({ category })}`),
     getLearningProfile: (id) => request(`/roster/${id}/learning-profile`),
@@ -526,6 +566,7 @@ export const api = {
     iterate:    (id, data) => request(`/artifacts/${id}/iterate`, { method: "POST", body: JSON.stringify(data) }),
     approve:    (id) => request(`/artifacts/${id}/approve`, { method: "PATCH" }),
     cancel:     (id) => request(`/artifacts/${id}/cancel`, { method: "PATCH" }),
+    retry:      (id) => request(`/artifacts/${id}/retry`, { method: "POST" }),
     listByProject: (projectId, params?) => request(`/projects/${projectId}/artifacts?${qs(params)}`),
   },
 
@@ -674,21 +715,16 @@ components/
 │   ├── skeleton.tsx
 │   ├── separator.tsx
 │   ├── progress.tsx
-│   ├── sonner.tsx               # Toast notifications
 │   └── ...
 │
-├── layout/
-│   ├── sidebar.tsx              # App sidebar navigation
-│   ├── page-header.tsx          # Reusable page header (title + actions)
-│   └── empty-state.tsx          # Empty state illustration + CTA
+├── sidebar.tsx                  # App sidebar navigation
+├── top-bar.tsx                  # App top bar (theme toggle, workspace info)
+├── theme-provider.tsx           # Applies dark/light class + system detection
+├── query-provider.tsx           # TanStack Query client provider
+├── websocket-provider.tsx       # WS connection + query invalidation bridge
 │
-├── shared/
-│   ├── status-badge.tsx         # Artifact/agent status pill (Drafting, In Review, etc.)
-│   ├── cost-display.tsx         # Formatted USD display with token breakdown
-│   ├── cursor-pagination.tsx    # "Load more" / infinite scroll pagination
-│   ├── confirm-dialog.tsx       # Confirmation modal for destructive actions
-│   ├── file-upload.tsx          # Drag-and-drop file upload zone
-│   └── readiness-indicator.tsx  # Agent readiness score bar (0-100)
+└── shared/
+    └── cursor-pagination.tsx    # "Load more" pagination control
 ```
 
 ### 7.2 Feature Components
@@ -698,15 +734,13 @@ Organized by feature domain, co-located with their routes:
 ```
 features/
 ├── onboarding/
-│   ├── onboarding-form.tsx          # Company context form
-│   ├── roster-preview.tsx           # Generated roster preview with edit
-│   └── agent-card-editable.tsx      # Inline-editable agent card
+│   ├── onboarding-form.tsx          # Company context form (step 1)
+│   └── roster-preview.tsx           # Generated roster preview with edit (step 2)
 │
 ├── projects/
-│   ├── project-list.tsx             # Project grid/list
 │   ├── project-card.tsx             # Individual project card
-│   ├── project-create-dialog.tsx    # New project modal
-│   ├── project-brief-editor.tsx     # Rich text editor for project brief
+│   ├── create-project-dialog.tsx    # New project modal
+│   ├── brief-editor.tsx             # Rich text editor for project brief (auto-save)
 │   └── document-manager.tsx         # Document upload/list/delete
 │
 ├── artifacts/
@@ -723,31 +757,19 @@ features/
 │   └── artifact-actions.tsx         # Approve, Cancel, Iterate buttons
 │
 ├── comments/
-│   ├── floating-comment-toolbar.tsx # Appears on text selection (Section 12)
-│   ├── comment-form.tsx             # Inline comment input
-│   └── comment-thread.tsx           # List of contextual comments on a version
+│   └── floating-comment-toolbar.tsx # Appears on text selection (Section 12)
 │
-├── roster/
-│   ├── roster-grid.tsx              # Agent grid with filters
-│   ├── agent-card.tsx               # Agent summary card
-│   ├── agent-detail.tsx             # Full agent profile
-│   ├── agent-skills-list.tsx        # Skill entries with token budget
-│   ├── agent-history.tsx            # Completed artifacts table
-│   ├── knowledge-recommendations.tsx # Gap analysis + apply/dismiss
-│   └── research-dialog.tsx          # Manual research trigger form
-│
-├── settings/
-│   ├── git-connections.tsx          # Git provider CRUD
-│   ├── git-repo-list.tsx            # Repo listing with webhook status
-│   ├── mcp-connections.tsx          # MCP connection CRUD
-│   ├── mcp-tools-list.tsx           # Discovered tools display
-│   ├── usage-dashboard.tsx          # Cost charts and breakdowns
-│   └── budget-editor.tsx            # Monthly budget ceiling control
-│
-└── notifications/
-    ├── notification-toast.tsx       # Global toast container
-    └── websocket-provider.tsx       # WS connection + query invalidation
+└── roster/
+    ├── agent-card.tsx               # Agent summary card
+    ├── agent-detail-tabs.tsx        # Tabbed agent profile (profile/skills/history/knowledge)
+    ├── add-agent-dialog.tsx         # Add new agent form
+    └── research-dialog.tsx          # Manual research trigger form
 ```
+
+> **Post-launch components (not yet implemented):** `features/comments/comment-form.tsx` and `comment-thread.tsx` (comment thread inline in `<ReviewSidebar>`); full `features/roster/` sub-components (`roster-grid.tsx`, `agent-skills-list.tsx`, `agent-history.tsx`, `knowledge-recommendations.tsx`) — currently inlined in `agent-detail-tabs.tsx`; `features/settings/` feature components (settings pages use inline components); `components/shared/` extras (`status-badge.tsx`, `cost-display.tsx`, `confirm-dialog.tsx`, `file-upload.tsx`, `readiness-indicator.tsx`, `page-header.tsx`, `empty-state.tsx`).
+
+**Frontend E2E tests:** Playwright is configured (`frontend/playwright.config.ts`). Current coverage: `e2e/smoke.spec.ts` (app shell, roster, settings — 10 tests) and `e2e/roster.spec.ts` (role filter, grouping, combined filters — 7 tests). Run with `pnpm test:e2e` (requires dev server running). Browsers installed via `pnpm exec playwright install --with-deps chromium`.
+> `WebSocketProvider` and `ThemeProvider` live in `components/` (not `features/notifications/`) — see Section 7.1.
 
 ---
 
@@ -1166,7 +1188,7 @@ The onboarding page (`/onboarding`) is a multi-step wizard:
 
 | Step | Component | Fields |
 |---|---|---|
-| 1 | `<OnboardingForm>` | Company Name, Domain/Industry, Tech Stack (optional), Team Size, Primary Use Case (content/code/both) |
+| 1 | `<OnboardingForm>` | Company Name\*, Domain/Industry\*, Product Description, Company Stage (Idea/Startup/Growing/Established), Target Audience, Main Goals, Existing Team Roles, Tech Stack, Team Size, Use Case\* (content/code/both), Context Document uploads |
 | 2 | `<RosterPreview>` | Generated roster grid — each agent card is inline-editable (name, specialization). Add/remove buttons. |
 | 3 | Confirmation | Summary + "Confirm Roster" CTA |
 
@@ -1193,12 +1215,13 @@ The roster overview (`/roster`) displays all agents in a responsive grid (3 colu
 **Agent Card contents:**
 - Agent name (bold)
 - Specialization (one line, truncated)
+- Role badge: `lead` (accent-colored with ring) | `worker` (muted)
 - Status badge: `learning` (blue, pulse animation), `ready` (green), `working` (amber), `reflecting` (purple)
 - Progression level badge: `apprenti`, `opérationnel`, `expert`
 - Knowledge readiness bar (0-100, colored: red < 40, yellow 40-70, green > 70)
 - Completed artifacts count
 
-**Filters:** Status filter pills at the top (All / Learning / Ready / Working / Reflecting).
+**Filters:** Role filter tabs at the top (All roles / Leads / Workers). Status filter pills (All / Learning / Ready / Working / Reflecting). When no filters are active, agents are grouped into **Leads · N** and **Workers · N** sections. When any filter is active, a flat grid is shown.
 
 **Actions:** "Add Agent" button opens `<ResearchDialog>` for creating a new agent.
 
@@ -1208,7 +1231,7 @@ The agent detail page (`/roster/[agentId]`) uses tabs:
 
 | Tab | Content | Data Source |
 |---|---|---|
-| **Profile** | Name, specialization, description (all editable). Model tier toggle (Sonnet/Opus). Status + progression badges. | `GET /api/roster/{id}` |
+| **Profile** | Name, specialization, description (all editable). Role badge: `lead` \| `worker` (read-only). Model tier toggle (Sonnet/Opus). Status + progression badges. | `GET /api/roster/{id}` |
 | **Skills** | List of skill entries with title, token count, source artifact. Category filter (skill / work_learning / briefing). Token budget indicator (used/max). | `GET /api/roster/{id}/skills` |
 | **History** | Table of completed artifacts: title, date, version count. Links to artifact detail. | Derived from artifact list (filtered by agent participation — requires backend support or client-side join). |
 | **Knowledge** | Readiness score breakdown (4 factors from TDD-03 Section 10). Knowledge recommendations with Apply/Dismiss. Manual "Research a Topic" form. Upload knowledge (file/URL). | `GET /api/roster/{id}/learning-profile`, `GET /api/roster/{id}/knowledge-recommendations` |
@@ -1245,6 +1268,15 @@ The project detail page (`/projects/[projectId]`) has a tabbed layout:
 ---
 
 ## 16. Settings Pages
+
+### 16.0 Workspace (`/settings/workspace`)
+
+Default settings tab. Editable company context for the workspace.
+
+- **Company Context form:** Company Name, Domain/Industry, Product Description, Company Stage, Target Audience, Main Goals, Existing Team Roles, Tech Stack. Save button (enabled when dirty).
+- **Context Documents section:** List of uploaded workspace-level documents (filename, size). Upload button (`multipart/form-data` to `POST /api/workspace/documents`). Delete button per document. Supported types: PDF, DOCX, TXT, MD. Max 20 MB.
+- Data loaded via `GET /api/workspace` and `GET /api/workspace/documents`.
+- Changes saved via `PATCH /api/workspace`.
 
 ### 16.1 Git Providers (`/settings/git`)
 
@@ -1389,7 +1421,7 @@ const ProseDiffViewer = dynamic(() => import("@/features/artifacts/prose-diff-vi
 
 ## 21. Verification Checklist
 
-- [ ] All 44 API endpoints from TDD-04 have corresponding frontend API client methods
+- [ ] All 62 API endpoints from TDD-04 have corresponding frontend API client methods
 - [ ] TanStack Query keys are unique per resource and invalidated correctly on mutations and WebSocket events
 - [ ] Heartbeat polling activates only when `status === "drafting"` and stops when status changes
 - [ ] Sufficiency check issues are displayed inline next to the correct form fields with `matched_text` highlighting

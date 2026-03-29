@@ -55,6 +55,22 @@ celery_app.conf.update(
 # ---------------------------------------------------------------------------
 
 
+def _dispose_engine() -> None:
+    """Synchronously dispose the async engine connection pool.
+
+    Must be called after every asyncio.run() in a Celery task. The async
+    engine is a module-level singleton; after asyncio.run() closes the event
+    loop the pool holds asyncpg connections attached to that dead loop.
+    Disposing via sync_engine.dispose() clears the pool without requiring an
+    event loop, avoiding "Future attached to a different loop" on the next task.
+    """
+    from app.core.database import engine as _engine
+    try:
+        _engine.sync_engine.dispose()
+    except Exception:
+        pass
+
+
 @celery_app.task(
     name="app.core.celery_app.execute_artifact_dag",
     acks_late=True,
@@ -79,7 +95,6 @@ def execute_artifact_dag(execution_wave_id: str) -> None:
         from app.agents.orchestrator import execute_dag
         asyncio.run(execute_dag(execution_wave_id))
     except SoftTimeLimitExceeded:
-        # Mark execution wave as failed when Celery soft time limit is hit.
         logger.error(
             "execute_artifact_dag timed out: wave=%s", execution_wave_id
         )
@@ -89,9 +104,9 @@ def execute_artifact_dag(execution_wave_id: str) -> None:
         logger.exception(
             "execute_artifact_dag failed: wave=%s", execution_wave_id
         )
-        # The orchestrator already marks the wave as failed in its own
-        # error handling.  Re-raise so Celery records the failure.
         raise
+    finally:
+        _dispose_engine()
 
 
 @celery_app.task(
@@ -120,16 +135,20 @@ def process_document_upload(document_id: str) -> None:
     except Exception:
         logger.exception("process_document_upload failed: doc=%s", document_id)
         raise
+    finally:
+        _dispose_engine()
 
 
 @celery_app.task(
     name="app.core.celery_app.execute_agent_learning",
     soft_time_limit=300,
 )
-def execute_agent_learning(agent_id: str) -> None:
+def execute_agent_learning(agent_id: str, topic: str | None = None) -> None:
     """Run the initial learning phase for a newly created agent.
 
     Builds foundational knowledge via web research, stores as agent_skills.
+    When `topic` is provided, performs targeted research on that topic instead
+    of the full workspace-context onboarding research.
 
     Spec: TDD-03 Section 11.2.
     """
@@ -140,7 +159,7 @@ def execute_agent_learning(agent_id: str) -> None:
 
     try:
         from app.agents.learning import execute_learning
-        asyncio.run(execute_learning(agent_id))
+        asyncio.run(execute_learning(agent_id, topic=topic))
     except SoftTimeLimitExceeded:
         logger.error("execute_agent_learning timed out: agent=%s", agent_id)
         _recover_agent_sync(agent_id)
@@ -148,6 +167,8 @@ def execute_agent_learning(agent_id: str) -> None:
     except Exception:
         logger.exception("execute_agent_learning failed: agent=%s", agent_id)
         raise
+    finally:
+        _dispose_engine()
 
 
 @celery_app.task(
@@ -177,6 +198,8 @@ def execute_agent_reflection(agent_id: str) -> None:
     except Exception:
         logger.exception("execute_agent_reflection failed: agent=%s", agent_id)
         raise
+    finally:
+        _dispose_engine()
 
 
 # ---------------------------------------------------------------------------

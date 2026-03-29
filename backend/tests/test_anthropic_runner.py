@@ -525,3 +525,256 @@ class TestRunAgentIntegration:
             )
 
         assert result.files == {"a.txt": "aaa", "b.txt": "bbb"}
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: context summarization helpers (Ticket 17.4)
+# ---------------------------------------------------------------------------
+
+
+class TestEstimateMessagesTokens:
+    def test_simple_string_content(self) -> None:
+        from app.agents.anthropic_runner import _estimate_messages_tokens
+
+        messages = [{"role": "user", "content": "Hello world"}]
+        tokens = _estimate_messages_tokens(messages)
+        assert tokens > 0
+        assert tokens < 10  # "Hello world" is ~2 tokens
+
+    def test_multiple_messages(self) -> None:
+        from app.agents.anthropic_runner import _estimate_messages_tokens
+
+        messages = [
+            {"role": "user", "content": "First message with some content."},
+            {"role": "assistant", "content": "Response with more content."},
+            {"role": "user", "content": "Follow up."},
+        ]
+        tokens = _estimate_messages_tokens(messages)
+        assert tokens > 10
+
+    def test_tool_result_content(self) -> None:
+        from app.agents.anthropic_runner import _estimate_messages_tokens
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "File contents here."},
+                ],
+            },
+        ]
+        tokens = _estimate_messages_tokens(messages)
+        assert tokens > 0
+
+    def test_empty_messages(self) -> None:
+        from app.agents.anthropic_runner import _estimate_messages_tokens
+
+        assert _estimate_messages_tokens([]) == 0
+
+
+class TestSummarizeConversation:
+    @pytest.mark.asyncio
+    async def test_below_threshold_returns_unchanged(self) -> None:
+        from app.agents.anthropic_runner import _summarize_conversation
+
+        messages = [{"role": "user", "content": "Short message."}]
+
+        with patch("app.agents.anthropic_runner.settings") as mock_settings:
+            mock_settings.AGENT_CONTEXT_SUMMARIZATION_THRESHOLD = 60_000
+            result = await _summarize_conversation(messages, "system", 5)
+
+        assert result is messages  # Same object — not a copy
+
+    @pytest.mark.asyncio
+    async def test_above_threshold_triggers_summarization(self) -> None:
+        from app.agents.anthropic_runner import _summarize_conversation
+
+        # Build messages with enough content to exceed a low threshold
+        big_content = "x " * 500  # ~500 tokens
+        messages = [
+            {"role": "user", "content": big_content},
+            {"role": "assistant", "content": big_content},
+            {"role": "user", "content": big_content},
+        ]
+
+        summary_response = FakeResponse(
+            content=[FakeTextBlock(text="## Summary\nThe conversation covered X, Y, Z.")],
+            stop_reason="end_turn",
+            usage=FakeUsage(input_tokens=200, output_tokens=50),
+        )
+
+        with (
+            patch("app.agents.anthropic_runner.settings") as mock_settings,
+            patch("app.agents.anthropic_runner.get_anthropic_client") as mock_gc,
+        ):
+            mock_settings.AGENT_CONTEXT_SUMMARIZATION_THRESHOLD = 100  # Very low
+            mock_settings.MODEL_HAIKU = "claude-haiku-4-5-20251001"
+            mock_client = AsyncMock()
+            mock_client.messages.create = AsyncMock(return_value=summary_response)
+            mock_gc.return_value = mock_client
+
+            result = await _summarize_conversation(messages, "system prompt", 5)
+
+        # Should return a compressed 2-message conversation
+        assert len(result) == 2
+        assert result[0]["role"] == "user"
+        assert "Summary" in result[0]["content"]
+        assert result[1]["role"] == "assistant"
+        assert "Continuing" in result[1]["content"]
+
+        # Haiku should have been called
+        mock_client.messages.create.assert_called_once()
+        call_kwargs = mock_client.messages.create.call_args
+        assert call_kwargs.kwargs["model"] == "claude-haiku-4-5-20251001"
+
+    @pytest.mark.asyncio
+    async def test_summarization_failure_returns_original(self) -> None:
+        from app.agents.anthropic_runner import _summarize_conversation
+
+        big_content = "x " * 500
+        messages = [{"role": "user", "content": big_content}]
+
+        with (
+            patch("app.agents.anthropic_runner.settings") as mock_settings,
+            patch("app.agents.anthropic_runner.get_anthropic_client") as mock_gc,
+        ):
+            mock_settings.AGENT_CONTEXT_SUMMARIZATION_THRESHOLD = 100
+            mock_settings.MODEL_HAIKU = "claude-haiku-4-5-20251001"
+            mock_client = AsyncMock()
+            mock_client.messages.create = AsyncMock(side_effect=RuntimeError("API down"))
+            mock_gc.return_value = mock_client
+
+            result = await _summarize_conversation(messages, "system", 5)
+
+        # Should gracefully return original messages
+        assert result is messages
+
+    @pytest.mark.asyncio
+    async def test_empty_summary_returns_original(self) -> None:
+        from app.agents.anthropic_runner import _summarize_conversation
+
+        big_content = "x " * 500
+        messages = [{"role": "user", "content": big_content}]
+
+        empty_response = FakeResponse(
+            content=[FakeTextBlock(text="")],
+            stop_reason="end_turn",
+            usage=FakeUsage(input_tokens=100, output_tokens=0),
+        )
+
+        with (
+            patch("app.agents.anthropic_runner.settings") as mock_settings,
+            patch("app.agents.anthropic_runner.get_anthropic_client") as mock_gc,
+        ):
+            mock_settings.AGENT_CONTEXT_SUMMARIZATION_THRESHOLD = 100
+            mock_settings.MODEL_HAIKU = "claude-haiku-4-5-20251001"
+            mock_client = AsyncMock()
+            mock_client.messages.create = AsyncMock(return_value=empty_response)
+            mock_gc.return_value = mock_client
+
+            result = await _summarize_conversation(messages, "system", 5)
+
+        assert result is messages
+
+
+# ---------------------------------------------------------------------------
+# Integration test: summarization triggered within run_agent loop
+# ---------------------------------------------------------------------------
+
+
+class TestRunAgentWithSummarization:
+    @pytest.mark.asyncio
+    async def test_short_run_never_summarizes(self) -> None:
+        """Runs that finish in < 3 tool iterations never trigger summarization."""
+        tool_response = FakeResponse(
+            content=[
+                FakeToolUseBlock(name="file_write", input={"path": "a.py", "content": "x"}, id="t1"),
+            ],
+            stop_reason="tool_use",
+            usage=FakeUsage(input_tokens=100, output_tokens=50),
+        )
+        end_response = FakeResponse(
+            content=[FakeTextBlock(text="Done.")],
+            stop_reason="end_turn",
+            usage=FakeUsage(input_tokens=200, output_tokens=50),
+        )
+        mock_create = AsyncMock(side_effect=[tool_response, end_response])
+
+        async def tool_executor(name: str, inp: dict[str, Any]) -> str:
+            return "ok"
+
+        with (
+            patch("app.agents.anthropic_runner.get_anthropic_client") as mock_gc,
+            patch("app.agents.anthropic_runner._summarize_conversation", wraps=lambda m, s, i: m) as mock_summarize,
+        ):
+            mock_client = AsyncMock()
+            mock_client.messages.create = mock_create
+            mock_gc.return_value = mock_client
+
+            result = await run_agent(
+                system_prompt="test",
+                user_message="test",
+                tools=[FakeTool(name="file_write")],
+                model="claude-sonnet-4-20250514",
+                tool_executor=tool_executor,
+                max_iterations=15,
+            )
+
+        # Only 2 iterations — check interval is 3, so summarization never called
+        assert result.tool_loop_iterations == 2
+        mock_summarize.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_summarization_check_at_interval(self) -> None:
+        """At iteration 3 (index 2), summarization check is triggered."""
+        # 3 tool_use responses + 1 end_turn = 4 iterations
+        tool_response = FakeResponse(
+            content=[
+                FakeToolUseBlock(name="web_search", input={"q": "x"}, id="t1"),
+            ],
+            stop_reason="tool_use",
+            usage=FakeUsage(input_tokens=500, output_tokens=100),
+        )
+        end_response = FakeResponse(
+            content=[FakeTextBlock(text="Done.")],
+            stop_reason="end_turn",
+            usage=FakeUsage(input_tokens=600, output_tokens=80),
+        )
+        mock_create = AsyncMock(
+            side_effect=[tool_response, tool_response, tool_response, end_response]
+        )
+
+        async def tool_executor(name: str, inp: dict[str, Any]) -> str:
+            return "search result"
+
+        # Mock _summarize_conversation to track calls but return messages unchanged
+        original_messages = None
+
+        async def mock_summarize(messages, system, iteration):
+            nonlocal original_messages
+            original_messages = list(messages)
+            return messages  # No-op
+
+        with (
+            patch("app.agents.anthropic_runner.get_anthropic_client") as mock_gc,
+            patch(
+                "app.agents.anthropic_runner._summarize_conversation",
+                side_effect=mock_summarize,
+            ) as mock_sum,
+        ):
+            mock_client = AsyncMock()
+            mock_client.messages.create = mock_create
+            mock_gc.return_value = mock_client
+
+            result = await run_agent(
+                system_prompt="test",
+                user_message="test",
+                tools=[FakeTool(name="web_search")],
+                model="claude-sonnet-4-20250514",
+                tool_executor=tool_executor,
+                max_iterations=15,
+            )
+
+        assert result.tool_loop_iterations == 4
+        # _summarize_conversation should be called once (at iteration index 2, i.e., 3rd)
+        assert mock_sum.call_count == 1

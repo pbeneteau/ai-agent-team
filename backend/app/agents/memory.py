@@ -27,11 +27,15 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Budget constants (TDD-03 Section 5.1)
+# Sourced from settings for env-var tunability (Ticket 17.6).
+# Module-level aliases kept for backward compat with tests and other imports.
 # ---------------------------------------------------------------------------
 
-MEMORY_BUDGET_TOTAL: int = 8_000
-MEMORY_BUDGET_SKILLS: int = 6_000
-MEMORY_BUDGET_LEARNINGS: int = 2_000
+from app.config.settings import settings as _settings
+
+MEMORY_BUDGET_TOTAL: int = _settings.AGENT_MEMORY_BUDGET_TOTAL
+MEMORY_BUDGET_SKILLS: int = _settings.AGENT_MEMORY_BUDGET_SKILLS
+MEMORY_BUDGET_LEARNINGS: int = _settings.AGENT_MEMORY_BUDGET_LEARNINGS
 
 # ---------------------------------------------------------------------------
 # Token counting (TDD-03 Section 5.2)
@@ -247,7 +251,11 @@ async def trigger_compaction(
     4. If still over budget after compaction, hard-truncate oldest learnings.
     """
     from app.agents.anthropic_runner import run_agent
+    from app.agents.telemetry import CompactionMetrics, Timer, emit_compaction_metrics
     from app.models.agent import Agent
+
+    compaction_timer = Timer()
+    compaction_timer.__enter__()
 
     # Load the agent for name/specialization
     agent_result = await db_session.execute(
@@ -275,6 +283,8 @@ async def trigger_compaction(
     learning_entries = [e for e in entries if e.category == "work_learning"]
     skill_tokens = sum(e.token_count for e in skill_entries)
     learning_tokens = sum(e.token_count for e in learning_entries)
+    before_tokens = skill_tokens + learning_tokens
+    entries_before = len(entries)
 
     # Format entries for the compaction prompt
     skills_text = "\n\n".join(
@@ -357,6 +367,26 @@ async def trigger_compaction(
             agent_id, budget.total_tokens, budget.total_budget,
         )
         await _hard_truncate_learnings(agent_id, db_session)
+
+    # Emit compaction telemetry (Ticket 16.1)
+    compaction_timer.__exit__(None, None, None)
+    post_budget = await check_memory_budget(agent_id, db_session)
+    # Count remaining entries
+    remaining_result = await db_session.execute(
+        select(func.count(AgentSkill.id))
+        .where(AgentSkill.agent_id == agent_id)
+        .where(AgentSkill.category.in_(["skill", "work_learning"]))
+    )
+    entries_after = int(remaining_result.scalar_one())
+
+    emit_compaction_metrics(CompactionMetrics(
+        agent_id=agent_id,
+        before_tokens=before_tokens,
+        after_tokens=post_budget.total_tokens,
+        entries_before=entries_before,
+        entries_after=entries_after,
+        elapsed_seconds=compaction_timer.elapsed,
+    ))
 
 
 def _parse_compaction_output(text: str) -> tuple[str, str]:

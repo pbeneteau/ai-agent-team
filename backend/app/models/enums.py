@@ -46,6 +46,11 @@ class ProcessingStatus(str, enum.Enum):
     FAILED = "failed"
 
 
+class AgentRole(str, enum.Enum):
+    LEAD = "lead"
+    WORKER = "worker"
+
+
 class AgentStatus(str, enum.Enum):
     LEARNING = "learning"
     READY = "ready"

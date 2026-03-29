@@ -26,7 +26,9 @@ logger = logging.getLogger(__name__)
 # Constants (TDD-03 Section 8.2)
 # ---------------------------------------------------------------------------
 
-UPSTREAM_TOKEN_CAP: int = 15_000
+from app.config.settings import settings as _settings
+
+UPSTREAM_TOKEN_CAP: int = _settings.AGENT_UPSTREAM_TOKEN_CAP
 HEAD_RATIO: float = 0.47
 TAIL_RATIO: float = 0.53
 

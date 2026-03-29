@@ -16,6 +16,7 @@ class AgentListItem(BaseModel):
     id: str
     name: str
     specialization: str
+    role: str
     description: str | None = None
     status: str
     readiness_score: int
@@ -39,6 +40,7 @@ class AgentDetail(BaseModel):
     id: str
     name: str
     specialization: str
+    role: str
     description: str | None = None
     system_prompt: str | None = None
     status: str
@@ -82,6 +84,11 @@ class UpdateAgentRequest(BaseModel):
 class ArchiveResponse(BaseModel):
     id: str
     archived_at: datetime
+
+
+class RestoreResponse(BaseModel):
+    id: str
+    restored: bool
 
 
 # ---------------------------------------------------------------------------

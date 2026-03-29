@@ -25,6 +25,8 @@ class ProjectDetail(BaseModel):
     id: str
     name: str
     description: str | None = None
+    artifact_count: int = 0
+    brief_status: str = "none"  # "none" | "draft" | "published"
     brief_draft: str | None = None
     brief_published: str | None = None
     brief_fingerprint: str | None = None

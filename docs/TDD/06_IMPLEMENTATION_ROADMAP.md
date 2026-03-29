@@ -1,7 +1,7 @@
 # Phase 6 — Implementation Roadmap
 
 > **Document type:** Implementation Plan
-> **Status:** Draft
+> **Status:** Complete (all sprints executed)
 > **Source of truth:** `docs/TDD/01_PRD_AND_WORKFLOWS.md` through `docs/TDD/05_FRONTEND_UX_TDD.md`
 > **Scope:** Strictly ordered, dependency-aware coding tickets. Each ticket produces a testable outcome. No architecture — that's settled in TDDs 01-05.
 
@@ -18,20 +18,22 @@
 
 ## Codebase Starting Point
 
-| Layer | Current State |
-|---|---|
-| **Backend** | Clean slate. All V1 code has been removed. Everything is written from scratch. |
-| **Docker** | Nothing. `docker-compose.yml` created in Ticket 0.1. |
-| **Alembic** | Nothing. Initialized in Ticket 0.2. |
-| **Frontend** | Nothing. Initialized in Sprint 8. |
+> **Note:** All sprints are complete. This section describes the starting state when implementation began.
+
+| Layer | Starting State | Final State |
+|---|---|---|
+| **Backend** | Clean slate (all V1 code removed) | 12 SQLAlchemy models, 9 Alembic migrations, 10 route files, full AI engine, 7 tools |
+| **Docker** | Nothing | Full `docker-compose.yml` with postgres/redis/minio/backend/worker/beat/frontend |
+| **Alembic** | Nothing | 9 migrations (8 schema + 1 workspace context fields) |
+| **Frontend** | Nothing | Next.js 15 + full feature set; App Router with `(app)` and `(onboarding)` route groups |
 
 ### Approach: Full Clean Slate
 
-All V1 code has been deleted. Every module — including infrastructure files that were originally earmarked for reuse (settings, database, S3, Celery, Anthropic runner, tool registry, git providers, MCP client, WebSocket manager) — is written fresh from the TDD specs. This avoids carrying forward any V1 assumptions or technical debt.
+All V1 code was deleted. Every module — including infrastructure files that were originally earmarked for reuse (settings, database, S3, Celery, Anthropic runner, tool registry, git providers, MCP client, WebSocket manager) — was written fresh from the TDD specs. This avoided carrying forward any V1 assumptions or technical debt.
 
 ---
 
-## Sprint 0: Infrastructure & Clean Slate
+## Sprint 0: Infrastructure & Clean Slate COMPLETE ✓
 
 ### Ticket 0.1 — Project scaffold + Docker infrastructure
 
@@ -121,7 +123,7 @@ backend/
 
 ---
 
-## Sprint 1: Database Schema
+## Sprint 1: Database Schema COMPLETE ✓
 
 ### Ticket 1.1 — Create V2 SQLAlchemy models
 
@@ -169,7 +171,8 @@ backend/
    - Migration 6: Create `artifact_versions`.
    - Migration 7: Create `contextual_comments`, `document_chunks`.
    - Migration 8: Seed default workspace (id = hardcoded UUID, name = "Default Workspace", `onboarding_completed = false`).
-3. Include all indexes defined in TDD-02 (partial indexes, unique constraints).
+   - Migration 9: Add workspace context fields (`domain_description`, `tech_stack`, `team_size`, `use_case`, `company_stage`, `target_audience`, `main_goals`, `existing_team_roles`).
+2. Include all indexes defined in TDD-02 (partial indexes, unique constraints).
 
 **Verify:**
 - `alembic upgrade head` runs clean against a fresh database.
@@ -179,7 +182,7 @@ backend/
 
 ---
 
-## Sprint 2: Core Backend Services
+## Sprint 2: Core Backend Services COMPLETE ✓
 
 ### Ticket 2.1 — S3 workspace module
 
@@ -267,7 +270,7 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 
 ---
 
-## Sprint 3: AI Engine — Foundation
+## Sprint 3: AI Engine — Foundation COMPLETE ✓
 
 ### Ticket 3.1 — Agent execution loop
 
@@ -343,7 +346,7 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 - `load_agent_memory(agent_id)` — queries `agent_skills` for `skill` + `work_learning` categories, formats as markdown sections, returns string. (TDD-03 Section 5.4)
 - `check_memory_budget(agent_id)` — returns current total tokens and remaining budget.
 - `trigger_compaction(agent_id)` — runs the Sonnet compaction call (TDD-03 Section 5.3), replaces existing entries with compacted versions.
-- Token counting via `anthropic.count_tokens()` or `tiktoken`.
+- Token counting via `tiktoken` (`cl100k_base` encoding) — `anthropic.count_tokens()` is not used.
 
 **Verify:**
 - Unit test: `load_agent_memory()` formats skills correctly with `## Skill:` and `## Work Learning:` headers.
@@ -367,7 +370,7 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 
 ---
 
-## Sprint 4: AI Engine — DAG & Orchestration
+## Sprint 4: AI Engine — DAG & Orchestration COMPLETE ✓
 
 ### Ticket 4.1 — DAG template library
 
@@ -449,7 +452,7 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 
 ---
 
-## Sprint 5: AI Engine — Sufficiency, Memory, Reflection
+## Sprint 5: AI Engine — Sufficiency, Memory, Reflection COMPLETE ✓
 
 ### Ticket 5.1 — Sufficiency check engine
 
@@ -494,7 +497,7 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 **Implement the lifecycle from TDD-03 Section 11.2:**
 1. Set `agent.status = 'learning'`.
 2. Build learning prompt with workspace domain context.
-3. Run agent loop with tools: `web_search`, `web_browser`, `file_write`.
+3. Run agent loop with tools: `file_read`, `file_write`, `web_search`, `web_browser`, `vector_search`.
 4. Parse output → create `agent_skills` rows with `category = 'skill'`.
 5. Compute and store readiness score.
 6. Set `agent.status = 'ready'`.
@@ -544,7 +547,7 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 
 ---
 
-## Sprint 6: API Routes — Core
+## Sprint 6: API Routes — Core COMPLETE ✓
 
 ### Ticket 6.1 — Onboarding endpoint
 
@@ -570,7 +573,7 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 
 ### Ticket 6.2 — Roster/Agent CRUD
 
-**Ref:** TDD-04 Section 3 (16 endpoints)
+**Ref:** TDD-04 Section 3 (17 endpoints)
 
 **Goal:** Implement all roster endpoints.
 
@@ -580,6 +583,7 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 - `POST /api/roster` — create agent, enqueue learning.
 - `PATCH /api/roster/{id}` — update agent config.
 - `DELETE /api/roster/{id}` — soft archive.
+- `POST /api/roster/{id}/restore` — restore archived agent.
 - `DELETE /api/roster/{id}/permanent` — hard delete.
 - `GET /api/roster/{id}/skills` — list skills with category filter + budget info.
 - `GET /api/roster/{id}/learning-profile` — readiness breakdown.
@@ -612,10 +616,17 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 - `PUT /api/projects/{id}/context/draft` — save working draft.
 - `POST /api/projects/{id}/context/publish` — publish brief, compute fingerprint, trigger `brief_all_agents()`.
 
-**Implement in `app/api/routes/documents.py`:**
+**Also implement in `app/api/routes/projects.py`** (no separate documents.py — project document endpoints colocate with project routes):
 - `GET /api/projects/{pid}/documents` — list.
 - `POST /api/projects/{pid}/documents` — upload (multipart), store in S3, enqueue `process_document_upload`.
 - `DELETE /api/projects/{pid}/documents/{did}` — delete chunks, S3 object, DB row.
+
+**Implement in `app/api/routes/workspace.py`** (workspace-level documents available to all projects):
+- `GET /api/workspace` — get workspace detail.
+- `PATCH /api/workspace` — update workspace context.
+- `GET /api/workspace/documents` — list workspace-level documents.
+- `POST /api/workspace/documents` — upload workspace-level document (multipart).
+- `DELETE /api/workspace/documents/{id}` — delete workspace-level document.
 
 **Verify:**
 - Integration test: create project → save draft → publish → verify agents are briefed.
@@ -660,6 +671,7 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 - `POST /api/artifacts/{id}/iterate` — create contextual comment + execution wave.
 - `PATCH /api/artifacts/{id}/approve` — approve, trigger reflection check.
 - `PATCH /api/artifacts/{id}/cancel` — cancel, revoke active Celery task if drafting.
+- `POST /api/artifacts/{id}/retry` — re-route and re-execute a cancelled/failed artifact.
 - `GET /api/projects/{pid}/artifacts` — list artifacts in project with status filter.
 - `POST /api/briefs/sufficiency-check` — standalone validation (no artifact required).
 
@@ -671,7 +683,7 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 
 ---
 
-## Sprint 7: API Routes — Integrations
+## Sprint 7: API Routes — Integrations COMPLETE ✓
 
 ### Ticket 7.1 — Git provider connections + push flow
 
@@ -778,7 +790,7 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 
 ### Ticket 7.6 — Health endpoint
 
-**Ref:** TDD-04 Section 13
+**Ref:** TDD-04 Section 14
 
 **Goal:** Implement `GET /health`.
 
@@ -790,7 +802,7 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 
 ---
 
-## Sprint 8: Frontend — Scaffold
+## Sprint 8: Frontend — Scaffold COMPLETE ✓
 
 ### Ticket 8.1 — Initialize Next.js project
 
@@ -837,12 +849,14 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 **Goal:** Build the root layout, providers, and sidebar.
 
 **Implement:**
-- `app/layout.tsx` — root layout with `ThemeProvider`, `QueryClientProvider`, `WebSocketProvider`, sidebar + main area (TDD-05 Section 3.2).
-- `providers/query-provider.tsx` — TanStack Query client with default stale times from TDD-05 Section 4.1.
-- `providers/websocket-provider.tsx` — WebSocket connection with reconnect, query invalidation bridge (TDD-05 Section 6.3).
-- `stores/ui-store.ts` — Zustand store for sidebar, theme, diff mode, modals (TDD-05 Section 4.2).
-- `components/layout/sidebar.tsx` — Projects, Agency Roster, Settings links. Global readiness indicator.
-- `components/notifications/notification-toast.tsx` — Sonner integration.
+- `app/layout.tsx` — root layout with `ThemeProvider`, `QueryProvider`, `WebSocketProvider`, `<Toaster>` (TDD-05 Section 3.2). No sidebar here — that's in the `(app)` layout.
+- `app/(app)/layout.tsx` — app shell with `<Sidebar>` + `<TopBar>` + main content area.
+- `components/query-provider.tsx` — TanStack Query client with default stale times from TDD-05 Section 4.1.
+- `components/websocket-provider.tsx` — WebSocket connection with reconnect, query invalidation bridge (TDD-05 Section 6.3).
+- `lib/stores/ui-store.ts` — Zustand store for sidebar, theme, diff mode, modals (TDD-05 Section 4.2).
+- `components/sidebar.tsx` — Projects, Agency Roster, Settings links. Global readiness indicator.
+- `components/top-bar.tsx` — theme toggle, workspace context display.
+- Toast notifications use Sonner `<Toaster>` directly in the root layout (no separate notification component).
 
 **Verify:**
 - App renders with sidebar and main content area.
@@ -868,7 +882,7 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 
 ---
 
-## Sprint 9: Frontend — Core Flows
+## Sprint 9: Frontend — Core Flows COMPLETE ✓
 
 ### Ticket 9.1 — Onboarding flow
 
@@ -877,7 +891,7 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 **Goal:** Build the onboarding wizard at `/onboarding`.
 
 **Implement:**
-- `app/onboarding/page.tsx` — multi-step form.
+- `app/(onboarding)/onboarding/page.tsx` — multi-step form (route group, no app shell).
 - `features/onboarding/onboarding-form.tsx` — company context form (Step 1).
 - `features/onboarding/roster-preview.tsx` — generated roster with inline editing (Step 2).
 - Root page redirect guard: check if onboarded, redirect accordingly (TDD-05 Section 13.2).
@@ -894,11 +908,11 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 **Goal:** Build project list, create, detail, brief editor, and document manager.
 
 **Implement:**
-- `app/projects/page.tsx` — project grid with "New Project" dialog.
-- `app/projects/[projectId]/page.tsx` — artifact list tab.
-- `app/projects/[projectId]/brief/page.tsx` — brief editor with auto-save (debounced 1s) + publish.
-- `app/projects/[projectId]/documents/page.tsx` — drag-and-drop upload + document list.
-- `features/projects/` — all subcomponents (project-card, create-dialog, brief-editor, document-manager).
+- `app/(app)/projects/page.tsx` — project grid with "New Project" dialog.
+- `app/(app)/projects/[projectId]/page.tsx` — artifact list tab.
+- `app/(app)/projects/[projectId]/brief/page.tsx` — brief editor with auto-save (debounced 1s) + publish.
+- `app/(app)/projects/[projectId]/documents/page.tsx` — drag-and-drop upload + document list.
+- `features/projects/` — subcomponents: `project-card.tsx`, `create-project-dialog.tsx`, `brief-editor.tsx`, `document-manager.tsx`.
 - `components/shared/cursor-pagination.tsx` — "Load More" button for paginated lists.
 
 **Verify:**
@@ -913,7 +927,7 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 **Goal:** Build the artifact creation flow — the single most important UI.
 
 **Implement:**
-- `app/projects/[projectId]/artifacts/new/page.tsx` — Smart Brief page.
+- `app/(app)/projects/[projectId]/artifacts/new/page.tsx` — Smart Brief page.
 - `features/artifacts/smart-brief-form.tsx` — form with React Hook Form + Zod schema (TDD-05 Section 8.2).
 - `features/artifacts/sufficiency-feedback.tsx` — inline issue display with `matched_text` highlighting (TDD-05 Section 8.3).
 - `features/artifacts/delegate-preview.tsx` — modal showing plan, team, cost, override controls (TDD-05 Section 8.4).
@@ -946,7 +960,7 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 **Goal:** Build the review UI — the second most important UI.
 
 **Implement:**
-- `app/projects/[projectId]/artifacts/[artifactId]/page.tsx` — routes to heartbeat or review based on status.
+- `app/(app)/projects/[projectId]/artifacts/[artifactId]/page.tsx` — routes to heartbeat or review based on status.
 - `features/artifacts/artifact-review.tsx` — shell that routes to prose or code review.
 - `features/artifacts/prose-viewer.tsx` — markdown rendering via `react-markdown` + `remark-gfm`.
 - `features/artifacts/review-sidebar.tsx` — sources, assumptions, cost, comments.
@@ -968,11 +982,10 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 
 **Implement:**
 - `features/artifacts/prose-diff-viewer.tsx` — `react-diff-viewer-continued` with custom theme tokens, unified/side-by-side toggle (TDD-05 Section 11.3-11.4). Lazy-loaded.
-- `stores/selection-store.ts` — Zustand store for text selection state (TDD-05 Section 4.2).
-- `hooks/use-text-selection.ts` — native `Selection` API hook (TDD-05 Section 12.1).
+- `lib/stores/selection-store.ts` — Zustand store for text selection state (TDD-05 Section 4.2).
+- `lib/hooks/use-text-selection.ts` — native `Selection` API hook (TDD-05 Section 12.1).
 - `features/comments/floating-comment-toolbar.tsx` — positioned above selection, "Comment" button (TDD-05 Section 12.2).
-- `features/comments/comment-form.tsx` — instruction input, submit calls `POST /api/artifacts/{id}/iterate`.
-- `features/comments/comment-thread.tsx` — list of comments in sidebar.
+- Note: `comment-form.tsx` and `comment-thread.tsx` are post-launch — comment submission is handled inside `floating-comment-toolbar.tsx`; comment thread is rendered inline in `review-sidebar.tsx`.
 
 **Verify:**
 - Manual test: view diff between v1 and v2 in both modes.
@@ -980,7 +993,7 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 
 ---
 
-## Sprint 10: Frontend — Settings & Polish
+## Sprint 10: Frontend — Settings & Polish COMPLETE ✓
 
 ### Ticket 10.1 — Roster management UI
 
@@ -989,12 +1002,13 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 **Goal:** Build the roster overview and agent detail pages.
 
 **Implement:**
-- `app/roster/page.tsx` — agent grid with status filter pills.
+- `app/(app)/roster/page.tsx` — agent grid with status filter pills.
 - `features/roster/agent-card.tsx` — name, specialization, status, progression, readiness bar.
-- `app/roster/[agentId]/page.tsx` — agent detail with tabs (Profile, Skills, History, Knowledge).
-- `features/roster/agent-skills-list.tsx` — skill entries with token budget indicator.
-- `features/roster/knowledge-recommendations.tsx` — apply/dismiss actions.
+- `features/roster/add-agent-dialog.tsx` — add new agent form.
+- `app/(app)/roster/[agentId]/page.tsx` — agent detail with tabs (Profile, Skills, History, Knowledge).
+- `features/roster/agent-detail-tabs.tsx` — tabbed profile shell (inlines skills list, history, and knowledge recommendations).
 - `features/roster/research-dialog.tsx` — manual research trigger.
+- Note: `roster-grid.tsx`, `agent-skills-list.tsx`, `agent-history.tsx`, `knowledge-recommendations.tsx` are post-launch — currently inlined in `agent-detail-tabs.tsx`.
 
 **Verify:**
 - Manual test: view roster → click agent → see profile → view skills → trigger research.
@@ -1008,9 +1022,11 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 **Goal:** Build all settings pages.
 
 **Implement:**
-- `app/settings/git/page.tsx` — Git provider connections (TDD-05 Section 16.1).
-- `app/settings/mcp/page.tsx` — MCP connections (TDD-05 Section 16.2).
-- `app/settings/usage/page.tsx` — usage dashboard with budget editor (TDD-05 Section 16.3).
+- `app/(app)/settings/layout.tsx` — settings shell with tab navigation.
+- `app/(app)/settings/workspace/page.tsx` — workspace context editor + workspace-level documents (TDD-05 Section 16.0).
+- `app/(app)/settings/git/page.tsx` — Git provider connections (TDD-05 Section 16.1).
+- `app/(app)/settings/mcp/page.tsx` — MCP connections (TDD-05 Section 16.2).
+- `app/(app)/settings/usage/page.tsx` — usage dashboard with budget editor (TDD-05 Section 16.3).
 - Shared: connection cards, test buttons, confirmation dialogs for delete.
 
 **Verify:**
@@ -1039,7 +1055,7 @@ All task bodies are stubs (`pass` or `raise NotImplementedError`) — implementa
 
 ---
 
-## Sprint 11: Integration & QA
+## Sprint 11: Integration & QA COMPLETE ✓
 
 ### Ticket 11.1 — End-to-end: Prose artifact flow
 
@@ -1149,10 +1165,10 @@ Sprint 5: Sufficiency, Memory, Reflection                │
         │                                                │
 Sprint 6: API Routes — Core                              │
   ├── 6.1 Onboarding                                     │
-  ├── 6.2 Roster CRUD (16 endpoints)                     │
-  ├── 6.3 Projects + documents                           │
+  ├── 6.2 Roster CRUD (17 endpoints incl. restore)       │
+  ├── 6.3 Projects + documents + workspace routes        │
   ├── 6.4 Document processing pipeline                   │
-  └── 6.5 Artifact lifecycle (12 endpoints)              │
+  └── 6.5 Artifact lifecycle (13 endpoints incl. retry)  │
         │                                                │
 Sprint 7: API Routes — Integrations                      │
   ├── 7.1 Git providers + push flow                      │
@@ -1199,7 +1215,7 @@ Sprint 11: Integration & QA
 
 | Sprint | Tickets | Description |
 |---|---|---|
-| 0 | 3 | Infrastructure & clean slate |
+| 0 | 1 | Infrastructure & clean slate |
 | 1 | 2 | Database schema |
 | 2 | 4 | Core backend services |
 | 3 | 5 | AI engine foundation |
@@ -1211,4 +1227,537 @@ Sprint 11: Integration & QA
 | 9 | 6 | Frontend core flows |
 | 10 | 3 | Frontend settings & polish |
 | 11 | 4 | Integration & QA |
-| **Total** | **51** | |
+| 13 | 6 | Lead-guided architecture |
+| 14 | 4 | API completeness + QA |
+| 15 | 3 | CI/CD + expanded E2E |
+| 16 | 5 | Docker hardening + Playwright completion |
+| 17 | 7 | Harness hardening |
+| **Total** | **74** | |
+
+---
+
+## Sprint 13 — Lead-Guided Architecture
+
+**Goal:** Replace the flat worker-only execution model with a lead-guided planning → execution → review loop. Leads plan and review; workers execute.
+
+### Ticket 13.1 — DAG Template Library Overhaul ✓
+Replace 5 MVP templates with 13 code-focused lead-guided templates:
+full_feature, backend_feature, frontend_feature, bug_fix, refactor, security_fix, performance, infra_devops, mobile_feature, data_feature, api_integration, architecture, design_system.
+Each template has planning waves (leads), execution waves (workers), and a review wave (leads).
+Schema extended: DagSlot.is_lead, DagWave.wave_type, DagTemplate.max_iterations.
+
+### Ticket 13.2 — Router dag_plan Schema Extension ✓
+dag_plan JSONB now includes wave_type, is_lead, suggested_specializations per slot, and max_iterations at top level. Router correctly populates these from template definitions.
+
+### Ticket 13.3 — Tool Phase Matrix Extension ✓
+Added "planning" phase (file_read + web tools, no file_write) and "review" phase (file_read only, pre-populated with worker files). Minor-fix uses execution phase tools.
+
+### Ticket 13.4 — Orchestrator Lead-Guided Execution ✓
+Rewrote execute_dag() for lead-guided flow:
+- Phase 1: planning waves run once, delegation plan extracted from "## Specialist Delegation" sections
+- Phase 2: execution+review loop (up to max_iterations): workers get delegated tasks injected, leads review with APPROVE/MINOR_FIX/REVISE decisions
+- MINOR_FIX: lead runs with file_write to patch files directly
+- REVISE: per-specialist feedback extracted and injected into next iteration
+- Consensus decision when multiple review leads run in parallel (REVISE > MINOR_FIX > APPROVE)
+- Legacy flat-wave execution preserved for backward compatibility
+
+### Ticket 13.5 — Agent role field ✓
+Added `role` column to agents table (`lead` | `worker`, default `worker`).
+Migration `0008_agent_role.py`. Onboarding generates both leads and workers.
+Router filtering: lead slots → lead agents, execution slots → worker agents.
+Frontend: role badge on agent cards, grouped view (Leads / Workers) in roster, role field in agent detail profile tab.
+
+### Ticket 13.6 — Onboarding Lead Generation ✓
+Onboarding Haiku prompt generates domain-appropriate leads alongside workers.
+Tech Lead + PM Lead always generated for code-focused workspaces.
+Design Lead generated when use_case includes UI.
+Contextual leads (Security, DevOps, Data, Mobile) generated based on company context.
+
+---
+
+## Sprint 14 — API Completeness + QA
+
+**Goal:** Fill remaining API gaps, improve test coverage, and set up the frontend E2E test harness.
+
+### Ticket 14.1 — GET /api/projects/{id} ✓
+Added `GET /api/projects/{project_id}` route returning `ProjectDetail` with:
+- `artifact_count: int` — live count of non-cancelled artifacts
+- `brief_status: str` — `"none"` | `"draft"` | `"published"` derived from brief fields
+POST and PATCH also populate these fields. Frontend `ProjectDetail` type updated with `brief_status`.
+
+### Ticket 14.2 — Webhook Deduplication Live-Path Test ✓
+Added `test_duplicate_webhook_skipped_no_celery_task` to `TestWebhookEdgeCases`.
+`DedupMockSession` class: `flush()` raises `IntegrityError` on the `external_comment_id` unique constraint.
+Assertions: 200 response, Celery task NOT enqueued, `db.rollback()` called.
+
+### Ticket 14.3 — Playwright E2E Setup ✓
+- `@playwright/test ^1.50.0` added to `frontend/package.json` devDependencies
+- `frontend/playwright.config.ts` — Chromium, `localhost:3000`, html reporter, `testDir: "./e2e"`
+- `frontend/tsconfig.playwright.json` — isolates Playwright types from Next.js build
+- `frontend/e2e/smoke.spec.ts` — 10 tests: app shell, roster page, role/status filter pills, role badges, settings
+- `frontend/e2e/roster.spec.ts` — 7 tests: role grouping, filter toggles, combined filters, empty state, agent detail
+- Scripts: `test:e2e` (headless), `test:e2e:ui` (Playwright UI), `test:e2e:report`
+- First-time setup: `pnpm install && pnpm exec playwright install --with-deps chromium`
+
+### Ticket 14.4 — Workspace Context Endpoints ✓
+Integrated 3 untracked files from workspace context feature:
+- `alembic/versions/0009_workspace_context_fields.py` — adds 5 context columns (`product_description`, `company_stage`, `target_audience`, `main_goals`, `existing_team`) to workspaces; makes `documents.project_id` nullable; adds `documents.workspace_id` FK
+- `app/api/routes/workspace.py` — 5 endpoints: `GET /api/workspace`, `PATCH /api/workspace` (re-triggers agent learning when context fields change), `GET /api/workspace/documents`, `POST /api/workspace/documents` (20 MB limit), `DELETE /api/workspace/documents/{id}`
+- `app/api/schemas/workspace.py` — `WorkspaceDetail`, `WorkspaceUpdateRequest`, `WorkspaceDocumentItem`
+- `tests/test_workspace.py` — 15 tests covering all 5 endpoints
+
+---
+
+## Sprint 15 — CI/CD + Expanded E2E
+
+**Goal:** Protect the codebase with automated CI on every push and expand Playwright coverage to projects and settings pages.
+
+### Ticket 15.1 — GitHub Actions CI ✓
+`.github/workflows/ci.yml` — three jobs:
+- **`backend`**: Python 3.12, `pip install -r requirements.txt`, `pytest tests/ -q --tb=short`. No Docker services required (all tests mock DB/S3/Anthropic). Triggers on push to main and all PRs.
+- **`frontend`**: Node 20 + pnpm, `pnpm install --frozen-lockfile`, `pnpm tsc --noEmit`, `pnpm build`. Catches TypeScript errors and build regressions.
+- **`e2e`**: Chromium Playwright, auto-starts Next.js dev server via `webServer` config. Runs on non-draft PRs and pushes. Uploads HTML report as artifact (7-day retention).
+
+### Ticket 15.2 — Playwright: Projects page ✓
+`frontend/e2e/projects.spec.ts` — 5 tests:
+- Projects list renders without crash
+- Page shows a heading
+- Create/new project button is visible
+- Empty state or project cards render after data load
+- Non-existent project URL shows error/redirect without crash
+- Sidebar link navigates to /projects
+
+### Ticket 15.3 — Playwright: Settings pages ✓
+`frontend/e2e/settings.spec.ts` — 10 tests:
+- Settings tab nav renders all 4 tabs (Workspace, Git, MCP, Usage)
+- Clicking Workspace tab navigates to `/settings/workspace`
+- Clicking Git tab navigates to `/settings/git`
+- Workspace settings: Company Context card visible
+- Workspace settings: Context Documents card visible
+- Workspace settings: company name field present
+- Workspace settings: 4 company stage pills render
+- Workspace settings: Attach Document button visible
+- Workspace settings: Save Changes button present
+- MCP and Usage pages load without crash
+
+Also fixed: `tsconfig.playwright.json` now overrides `exclude: ["node_modules"]` to prevent inheriting the parent's exclusion of the `e2e/` directory; `playwright.config.ts` `webServer` is now active (not commented out).
+
+---
+
+## Sprint 16 — Docker Hardening + Playwright Completion
+
+**Goal:** Make `docker compose up` work end-to-end out of the box, add CI Docker smoke test, and complete Playwright coverage with artifact flow and onboarding tests.
+
+### Ticket 16.1 — docker-compose.yml hardening ✓
+Fixed four issues in the compose file:
+- **Migration step**: new `migrate` one-shot service runs `alembic upgrade head`; `backend`/`worker`/`beat` depend on `service_completed_successfully`
+- **Service hostnames**: `backend`/`worker`/`beat`/`migrate` now override `DATABASE_URL`, `REDIS_URL`, `S3_ENDPOINT_URL` with Docker service names (not `localhost` from `.env`)
+- **MinIO bucket init**: new `minio-init` service uses `minio/mc` to create `agent-artifacts` bucket on first start (idempotent)
+- **Frontend service**: fixed from broken `npm run dev` to `corepack enable pnpm && pnpm install && pnpm dev`; uses `node:20-alpine`; isolated `frontend_modules` volume; `NEXT_PUBLIC_API_URL=http://localhost:8000`; `NEXT_TELEMETRY_DISABLED=1`
+- Backend service gains a `healthcheck` on `/health`
+
+### Ticket 16.2 — .env.example update ✓
+Added `ENCRYPTION_KEY`, `S3_REGION`, `VOYAGE_API_KEY` entries and clarified [REQUIRED] fields and Docker override behavior.
+
+### Ticket 16.3 — CI Docker smoke test ✓
+Added `docker-smoke` job to `.github/workflows/ci.yml`:
+- Runs only on push to `main` (too expensive for every PR)
+- Starts postgres/redis/minio, runs `minio-init` and `migrate`, starts backend
+- Polls for healthy state (24 × 5s = 2 min timeout)
+- Curls `GET /health` expecting 200
+- Dumps logs on failure; tears down with `docker compose down -v`
+
+### Ticket 16.4 — Playwright: artifact flow ✓
+`frontend/e2e/artifact.spec.ts` — 8 tests:
+- New deliverable page loads, shows heading, type selector (Prose/Code), title input, description textarea, Validate button
+- Selecting Code type shows git-related fields
+- Unknown artifact ID: graceful loading state (no crash)
+- Project detail page + new deliverable link accessible
+
+### Ticket 16.5 — Playwright: onboarding wizard ✓
+`frontend/e2e/onboarding.spec.ts` — 6 tests:
+- Onboarding page loads, form visible
+- Company Name and Domain fields present
+- Use-case selector (Code/Content/Both) visible
+- Submit/next button present
+- Root `/` redirects to `/onboarding` or `/projects` (no 500)
+
+---
+
+## Sprint 17 — Harness Hardening
+
+**Goal:** Improve agent output quality and long-run reliability by applying patterns from [Anthropic's harness design research](https://www.anthropic.com/engineering/harness-design-long-running-apps): separate generation from evaluation with grading criteria, add delegation validation, manage context growth within agent loops, enable code execution during review, and instrument the system for data-driven tuning.
+
+**Motivation:** The current lead-guided model (Sprint 13) separates generation from evaluation structurally — leads review worker output. But review leads grade without running the code, use generic prompts without template-specific acceptance criteria, and there's no validation that delegation plans are actionable before workers start. The agent loop also has no context management within a single `run_agent()` call, risking degradation on complex tool-heavy runs.
+
+**New architectural decisions:**
+
+| ID | Decision | Rationale |
+|---|---|---|
+| **AD-26** | Template-specific grading criteria for review leads. Each DAG template defines a `review_criteria` list used to build the review prompt. | Generic "review this code" prompts let review leads rationalize issues. Structured criteria (does it compile? are all features present? are edge cases handled?) force specific evaluation. Inspired by the 4-axis grading framework in Anthropic's harness research. |
+| **AD-27** | Delegation validation: review leads validate planning output before execution begins. | One-shot delegation → execution risks vague plans producing vague code. A validation step catches underspecified delegation before workers waste tokens on it. |
+| **AD-28** | Mid-loop context summarization in `run_agent()` when accumulated messages exceed a token threshold. | The 15-iteration tool loop accumulates unbounded context. Beyond ~60K tokens of accumulated messages, quality degrades. Summarize-in-place before the next API call. |
+| **AD-29** | `code_exec` tool for review phase: run shell commands in an ephemeral Docker sandbox (read-only source mount, 30s timeout, no network). | Review leads can't distinguish "looks correct" from "works correctly" by reading alone. Running tests, linting, or starting a dev server catches functional bugs that code review misses. |
+| **AD-30** | Execution telemetry: structured logs for tool-loop depth, token accumulation, review decisions, iteration counts, and compaction frequency. | Hardcoded limits (max_iterations=15, 8K memory budget, 15K upstream cap, 3 review loops) were set without usage data. Telemetry enables data-driven tuning. |
+
+### Ticket 17.1 — Execution Telemetry ✓
+
+**Ref:** AD-30
+
+**Depends on:** None
+
+**Goal:** Instrument the agent system to measure actual usage patterns, establishing a baseline before subsequent tickets change behavior.
+
+**Changes:**
+
+**`app/agents/telemetry.py` (new file):**
+- `@dataclass ExecutionMetrics`: `wave_id`, `slot_key`, `agent_id`, `phase`, `model`, `tool_loop_iterations` (int), `tool_calls` (list of tool names), `input_tokens_final` (int), `output_tokens_final` (int), `elapsed_seconds` (float), `context_tokens_peak` (int — estimated peak input context size), `review_decision` (str | None), `compaction_triggered` (bool)
+- `emit_metrics(metrics: ExecutionMetrics)` — structured JSON log line via `logging.getLogger("telemetry")`. One line per agent call. Format: `{"event": "agent_run", ...metrics_as_dict}`.
+- `@dataclass ReviewLoopMetrics`: `wave_id`, `iteration_number`, `consensus_decision`, `decisions_by_lead` (dict), `elapsed_seconds`.
+- `emit_review_loop(metrics: ReviewLoopMetrics)` — structured JSON log line for review loop outcomes.
+
+**`app/agents/anthropic_runner.py` changes:**
+- Track `context_tokens_peak`: after building each API request, estimate input token count (sum of system + messages token estimates using tiktoken). Update peak if higher.
+- Track `tool_calls_log`: append tool name on each tool_use dispatch.
+- Return two new fields on `AgentResult`: `tool_loop_iterations: int`, `tool_calls_log: list[str]`, `context_tokens_peak: int`.
+
+**`app/agents/orchestrator.py` changes:**
+- After each `run_agent()` call in `_run_slot()`, build `ExecutionMetrics` and call `emit_metrics()`.
+- After each review loop iteration in `_execute_lead_dag()`, build `ReviewLoopMetrics` and call `emit_review_loop()`.
+
+**`app/agents/memory.py` changes:**
+- After `trigger_compaction()`, log a structured event: `{"event": "memory_compaction", "agent_id": ..., "before_tokens": ..., "after_tokens": ...}`.
+
+**Verify:**
+- `pytest tests/test_telemetry.py` — unit tests for metric dataclasses and emit functions.
+- Run a mocked execution; confirm structured JSON lines appear in telemetry logger output.
+- `AgentResult` new fields populated correctly in existing tests (default values for backward compat).
+
+---
+
+### Ticket 17.2 — Template-Specific Review Grading Criteria ✓
+
+**Ref:** AD-26, TDD-03 Section 4 (prompt engineering)
+
+**Depends on:** None (parallel with 17.1)
+
+**Goal:** Replace generic review prompts with template-specific acceptance criteria that force review leads to evaluate against concrete, gradable dimensions.
+
+**Changes:**
+
+**`app/agents/dag_templates/schema.py`:**
+- Add `review_criteria: list[str]` field to `DagTemplate`. Each entry is a natural-language criterion the review lead must explicitly grade (e.g., "All API endpoints return correct status codes and response shapes").
+
+**All 13 template files** (`full_feature.py`, `backend_feature.py`, `frontend_feature.py`, `bug_fix.py`, `refactor.py`, `security_fix.py`, `performance.py`, `infra_devops.py`, `mobile_feature.py`, `data_feature.py`, `api_integration.py`, `architecture.py`, `design_system.py`):
+- Add `review_criteria` to each template definition. Criteria are template-specific:
+
+  **`bug_fix`** example:
+  ```python
+  review_criteria=[
+      "The fix addresses the root cause, not just the symptom",
+      "No regressions introduced in adjacent functionality",
+      "Edge cases identified in the brief are handled",
+      "Error messages are clear and actionable",
+  ]
+  ```
+
+  **`full_feature`** example:
+  ```python
+  review_criteria=[
+      "All features specified in the brief are implemented and functional",
+      "Code compiles/runs without errors",
+      "Architecture follows the patterns established in the codebase",
+      "API contracts match the specification (routes, status codes, response shapes)",
+      "Error handling covers expected failure modes",
+      "No placeholder or stub implementations remain",
+  ]
+  ```
+
+  **`security_fix`** example:
+  ```python
+  review_criteria=[
+      "The vulnerability is fully mitigated, not just partially patched",
+      "Fix does not introduce new attack surfaces",
+      "Input validation is applied at all entry points",
+      "Secrets, tokens, and credentials are not exposed in code or logs",
+  ]
+  ```
+
+  (Define 3-6 criteria per template, matching the template's concern domain.)
+
+**`app/agents/prompt_builder.py`:**
+- New function `build_review_criteria_block(criteria: list[str]) -> str` — formats criteria as a numbered checklist with explicit grading instructions:
+  ```
+  ## Grading Criteria
+  Evaluate the code against EACH criterion below. For each one, state PASS or FAIL with a one-line justification. Do not rationalize failures as acceptable.
+
+  1. {criteria[0]}
+  2. {criteria[1]}
+  ...
+
+  If ANY criterion is FAIL → decision is REVISE (with specific feedback per failing criterion).
+  If all PASS but minor issues exist → MINOR_FIX (list exact fixes needed).
+  If all PASS cleanly → APPROVE.
+  ```
+- Integrate into review lead prompts: `_build_slot_effective_role()` checks if the slot is a review slot, loads the template's `review_criteria`, and appends the grading block to position 9.
+
+**`app/agents/orchestrator.py`:**
+- Pass `review_criteria` from the DAG template through to the prompt builder when building review slot prompts.
+
+**Verify:**
+- `pytest tests/test_dag_templates.py` — all 13 templates have non-empty `review_criteria`.
+- `pytest tests/test_prompt_builder.py` — review slots include the grading criteria block. Non-review slots do not.
+- Manual inspection: build a review prompt for `full_feature` and `bug_fix`, confirm criteria are template-appropriate.
+
+---
+
+### Ticket 17.3 — Delegation Validation Step ✓
+
+**Ref:** AD-27
+
+**Depends on:** 17.2 (review criteria framework)
+
+**Goal:** After planning leads produce delegation plans, review leads validate them before execution begins. Catches vague or contradictory delegation before workers waste tokens.
+
+**Changes:**
+
+**`app/agents/dag_templates/schema.py`:**
+- Add optional `validation_wave: DagWave | None` to `DagTemplate`. This wave runs between planning and execution. Uses review leads with a validation-specific prompt. Default: `None` (opt-in per template).
+- Add `wave_type="validation"` as a valid wave type.
+
+**Enable validation on complex templates only** (where vague delegation is most costly):
+- `full_feature.py`, `architecture.py`, `api_integration.py`, `data_feature.py` — add a validation wave with one review lead slot.
+- Simpler templates (`bug_fix`, `refactor`, etc.) — no validation wave (not worth the latency/cost for narrow-scope work).
+
+**`app/agents/prompt_builder.py`:**
+- New output format for `wave_type="validation"`:
+  ```
+  You are reviewing a delegation plan, NOT code. Evaluate whether each specialist's
+  assignment is specific enough to produce working code without ambiguity.
+
+  For each specialist delegation, check:
+  1. Is the scope unambiguous? (Could two different developers interpret this differently?)
+  2. Are input/output contracts specified? (What does the specialist receive? What must they produce?)
+  3. Are there contradictions between specialist assignments?
+  4. Are there gaps — work that no specialist is assigned?
+
+  Output:
+  - APPROVED — if all delegations are actionable
+  - REVISE — if any delegation is too vague, with specific revision instructions
+  ```
+
+**`app/tools/registry.py`:**
+- Add `"validation"` to the `Phase` literal type.
+- `get_tools_for_phase("validation")` → same as `"review"` (file_read only, pre-populated with planning outputs).
+
+**`app/agents/orchestrator.py` — `_execute_lead_dag()`:**
+- After planning waves complete, if `template.validation_wave` exists:
+  1. Pre-populate the validation context with planning outputs (same as review pre-population)
+  2. Run the validation wave
+  3. If decision is REVISE → re-run planning waves with validation feedback (max 1 re-plan)
+  4. If APPROVED → proceed to execution as before
+- Track validation cost in running totals.
+- Budget check before validation wave.
+
+**Verify:**
+- `pytest tests/test_dag_templates.py` — `full_feature`, `architecture`, `api_integration`, `data_feature` have validation waves. Others have `None`.
+- `pytest tests/test_orchestrator.py` — new test: delegation validation REVISE triggers re-planning. New test: delegation validation APPROVED proceeds to execution. New test: templates without validation skip straight to execution.
+- `Phase` type includes `"validation"`.
+
+---
+
+### Ticket 17.4 — Mid-Loop Context Summarization ✓
+
+**Ref:** AD-28
+
+**Depends on:** 17.1 (telemetry, for `context_tokens_peak`)
+
+**Goal:** Prevent context degradation within a single `run_agent()` call by summarizing accumulated messages when they exceed a threshold.
+
+**Changes:**
+
+**`app/agents/anthropic_runner.py`:**
+
+- New constant: `CONTEXT_SUMMARIZATION_THRESHOLD = 60_000` (tokens). Configurable via `settings.AGENT_CONTEXT_SUMMARIZATION_THRESHOLD` (optional, default 60K).
+
+- New async function `_summarize_conversation(messages: list[dict], system_prompt: str) -> list[dict]`:
+  1. Estimate total tokens in `messages` (reuse tiktoken estimation from 17.1).
+  2. If below threshold, return messages unchanged.
+  3. Otherwise, build a summarization request:
+     - System: `"Summarize the conversation so far. Preserve: all file paths and their current contents, all tool results, all decisions made, all pending work. Drop: intermediate reasoning, failed attempts, verbose tool outputs that were superseded by later calls."`
+     - User: the full messages list serialized
+     - Model: Haiku (fast, cheap — this is infrastructure, not creative work)
+     - max_tokens: 4096
+  4. Return a new messages list: `[{"role": "user", "content": summary_text}, {"role": "assistant", "content": "Understood. Continuing from the summarized state."}]`
+  5. Log: `{"event": "context_summarization", "before_tokens": ..., "after_tokens": ..., "iteration": ...}`
+
+- In the main loop, after processing tool results and before the next `_call_api_with_retry()`:
+  ```python
+  if iteration > 0 and iteration % 3 == 0:  # Check every 3 iterations, not every one
+      messages = await _summarize_conversation(messages, system_prompt)
+  ```
+
+- The check frequency (`% 3`) avoids overhead on short runs. Most agents finish in 3-5 iterations and never trigger this.
+
+**`app/config/settings.py`:**
+- Add `AGENT_CONTEXT_SUMMARIZATION_THRESHOLD: int = 60_000` (optional setting).
+
+**Verify:**
+- `pytest tests/test_anthropic_runner.py` — new test: messages below threshold are not summarized. New test: messages above threshold trigger summarization. New test: summarization preserves the conversation structure (user/assistant alternation). New test: short runs (≤3 iterations) never trigger summarization check.
+- Mock the Haiku call in tests to return a predictable summary.
+
+---
+
+### Ticket 17.5 — Code Execution Tool for Review Phase ✓
+
+**Ref:** AD-29
+
+**Depends on:** 17.2 (grading criteria reference "code compiles/runs")
+
+**Goal:** Give review leads the ability to execute code in a sandboxed environment, so they can verify functional correctness — not just read code and guess.
+
+**Changes:**
+
+**`app/tools/code_exec.py` (new file):**
+
+- Tool definition: `CODE_EXEC_TOOL`
+  ```python
+  name: "code_exec"
+  description: "Execute a shell command in a sandboxed environment containing the artifact's code files. Use this to run tests, lint, type-check, or start a dev server to verify functionality. 30-second timeout. No network access."
+  input_schema: {
+      "command": {"type": "string", "description": "Shell command to execute"},
+      "working_dir": {"type": "string", "description": "Working directory relative to project root", "default": "."}
+  }
+  ```
+
+- Executor: `async def execute_code_exec(tool_input, context) -> str`:
+  1. Write all files from `context.files` to a temp directory (`tempfile.mkdtemp()`).
+  2. Run command via `asyncio.create_subprocess_exec()` with:
+     - `cwd` = temp_dir / working_dir
+     - `timeout` = 30 seconds (via `asyncio.wait_for`)
+     - `stdout` + `stderr` captured
+     - No network: use `unshare --net` on Linux. On macOS (dev), skip network isolation but log a warning.
+     - Read-only: don't write results back to `context.files` (review is observation-only).
+  3. Return: `f"Exit code: {returncode}\n\nSTDOUT:\n{stdout[:8000]}\n\nSTDERR:\n{stderr[:4000]}"` (truncate to avoid context bloat).
+  4. On timeout: return `"Error: command timed out after 30 seconds"`.
+  5. Cleanup: `shutil.rmtree(temp_dir)` in a `finally` block.
+
+- Security constraints:
+  - Command string is passed as-is (the LLM chooses what to run — same trust model as file_write).
+  - No persistent state between calls (fresh temp dir each time).
+  - Output truncated to 12K chars total.
+
+**`app/tools/registry.py`:**
+- Import `CODE_EXEC_TOOL`.
+- Add to `"review"` phase: `return [FILE_READ_TOOL, CODE_EXEC_TOOL]`.
+- Update the tool matrix comment.
+
+**`app/agents/prompt_builder.py`:**
+- When building review prompts, add guidance for `code_exec` usage:
+  ```
+  You have access to a `code_exec` tool that runs shell commands against the code files.
+  Use it to verify functional correctness — run tests, lint, type-check, or attempt to build.
+  Do NOT rely solely on reading code. Run it and observe the results before grading.
+  ```
+
+**Verify:**
+- `pytest tests/test_code_exec.py`:
+  - Test: writes files to temp dir, runs `cat file.py`, gets correct output.
+  - Test: command timeout returns error message.
+  - Test: output truncation at 12K chars.
+  - Test: temp dir cleaned up after execution.
+  - Test: stderr captured alongside stdout.
+- `pytest tests/test_registry.py` — review phase now includes `code_exec`.
+- Integration test: mock a review agent call with code_exec tool available, verify it can run a command against written files.
+
+---
+
+### Ticket 17.6 — Tuning Pass: Calibrate Limits from Telemetry ✓
+
+**Ref:** AD-30 (telemetry data), AD-26 (criteria effectiveness)
+
+**Depends on:** 17.1 (telemetry must be deployed and collecting data), 17.2-17.5 (all harness changes in place)
+
+**Goal:** After running the system with telemetry for a representative set of artifacts, analyze the data and tune hardcoded limits. This is a manual analysis ticket, not a code-first ticket.
+
+**Process:**
+
+1. **Collect telemetry** from ≥10 real artifact executions across ≥3 different templates.
+
+2. **Analyze and tune these parameters:**
+
+   | Parameter | Current | Question to answer |
+   |---|---|---|
+   | `max_iterations` (tool loop) | 15 | What's the P95 actual iteration count? If P95 is 6, lower to 8. |
+   | `max_tokens` per API call | 8192 | Are agents hitting this cap? If not, keep. If yes, raise. |
+   | `MEMORY_BUDGET_TOTAL` | 8000 | How often does compaction trigger? Is the ceiling too tight? |
+   | `UPSTREAM_CONTEXT_CAP` | 15000 | Are upstream contexts routinely truncated? Is fidelity lost? |
+   | `max_iterations` (review loop) | 3 | How often do reviews go past iteration 1? If rarely, consider 2. |
+   | `CONTEXT_SUMMARIZATION_THRESHOLD` | 60000 | Does summarization trigger? Does it help or hurt quality? |
+   | Slot retry count | 3 | How often do retries succeed? Are transient failures common? |
+   | Validation wave value | On 4 templates | Does delegation validation actually catch issues? Cost vs benefit? |
+
+3. **Update constants** in `settings.py`, `orchestrator.py`, `anthropic_runner.py`, `memory.py` based on findings.
+
+4. **Document findings** in this ticket's section (update after analysis).
+
+**Verify:**
+- All existing tests pass with updated constants.
+- No behavioral regressions in E2E tests.
+
+---
+
+### Ticket 17.7 — Review Criteria Iteration & Evaluator Calibration
+
+**Ref:** AD-26 (criteria refinement)
+
+**Depends on:** 17.6 (needs real execution data and review decision logs)
+
+**Goal:** Refine review grading criteria based on observed evaluator behavior. The article warns that "even well-tuned evaluators show limits" and that calibration requires "reading evaluator logs for judgment divergence from human assessment."
+
+**Process:**
+
+1. **Audit review lead outputs** from the telemetry dataset:
+   - Cases where review lead APPROVED but the artifact had obvious issues → criteria too lenient or missing.
+   - Cases where review lead REVISE'd on non-issues → criteria too strict or ambiguous.
+   - Cases where MINOR_FIX patches introduced new problems → tighten minor-fix guidance.
+
+2. **Refine criteria per template** based on audit findings. Common failure patterns:
+   - Review lead says "the code looks correct" without verifying (pre-17.5 behavior still possible if code_exec fails)
+   - Review lead flags style issues as REVISE when they should be MINOR_FIX
+   - Review lead approves placeholder/stub implementations
+
+3. **Refine the review prompt preamble** in `prompt_builder.py`:
+   - Add anti-rationalization language: *"If you cannot verify a criterion, mark it FAIL — do not assume it passes."*
+   - Add calibration examples if specific failure patterns emerge.
+
+4. **Update template `review_criteria` lists** in all affected template files.
+
+**Verify:**
+- Manual review: re-run ≥3 artifacts through the review pipeline with updated criteria. Compare review decisions before/after.
+- All existing tests pass.
+
+---
+
+### Sprint 17 Dependency Graph
+
+```
+17.1 Telemetry ─────────────────────────────────────┐
+  │                                                  │
+  │ (parallel)                                       │
+  │                                                  ▼
+  ├── 17.2 Grading Criteria ──┬── 17.3 Delegation ──┤
+  │                           │    Validation        │
+  │                           │                      │
+  │                           └── 17.5 Code Exec ────┤
+  │                                                  │
+  └── 17.4 Context Summarization ────────────────────┤
+                                                     │
+                                                     ▼
+                                              17.6 Tuning Pass
+                                                     │
+                                                     ▼
+                                              17.7 Evaluator Calibration
+```
+
+**Parallelization:** 17.1, 17.2, and 17.4 can start simultaneously. 17.3 and 17.5 depend on 17.2. 17.6 and 17.7 are sequential and require real execution data.
