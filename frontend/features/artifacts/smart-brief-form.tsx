@@ -35,7 +35,6 @@ import {
   Blocks,
 } from "lucide-react";
 import { useCreateArtifact, useValidateArtifact, useDelegateArtifact } from "@/lib/hooks/use-artifacts";
-import { useGitConnections, useGitRepos } from "@/lib/hooks/use-git-providers";
 import { useProjectDetail } from "@/lib/hooks/use-projects";
 import { FieldIssues, SufficiencySummary } from "@/features/artifacts/sufficiency-feedback";
 import { DelegatePreview } from "@/features/artifacts/delegate-preview";
@@ -74,11 +73,7 @@ const briefSchema = z.object({
   reproduction_steps: z.string().max(2000),
   // Infra-specific
   affected_services: z.string().max(500),
-  // Git
   max_budget_usd: z.number().min(0.5),
-  git_connection_id: z.string(),
-  git_repo_url: z.string(),
-  git_base_branch: z.string(),
 });
 
 type BriefFormValues = z.infer<typeof briefSchema>;
@@ -125,25 +120,18 @@ export function SmartBriefForm({ projectId }: SmartBriefFormProps) {
       reproduction_steps: "",
       affected_services: "",
       max_budget_usd: 5.0,
-      git_connection_id: "",
-      git_repo_url: "",
-      git_base_branch: "",
     },
   });
 
   const taskType = watch("task_type") as TaskTypeId;
-  const gitConnectionId = watch("git_connection_id");
 
   const selectedType = TASK_TYPES.find((t) => t.id === taskType);
   const isBugFix = taskType === "bug_fix";
   const isInfra = taskType === "infra";
 
-  // Auto-inherit from project
+  // Auto-inherit context from project
   useEffect(() => {
     if (!project) return;
-    if (project.git_repo_url && !getValues("git_repo_url")) {
-      setValue("git_repo_url", project.git_repo_url);
-    }
     if (!getValues("context")) {
       const parts: string[] = [];
       if (project.primary_language) parts.push(project.primary_language);
@@ -153,12 +141,6 @@ export function SmartBriefForm({ projectId }: SmartBriefFormProps) {
       }
     }
   }, [project, setValue, getValues]);
-
-  // Git provider data
-  const { data: gitConnections } = useGitConnections();
-  const { data: gitRepos } = useGitRepos(gitConnectionId);
-  const connections = gitConnections?.items ?? [];
-  const repos = gitRepos?.items ?? [];
 
   // Group issues by field for inline display
   const issuesByField = useMemo(() => {
@@ -210,8 +192,7 @@ export function SmartBriefForm({ projectId }: SmartBriefFormProps) {
             context: values.context || undefined,
             description: buildFullDescription(values),
             max_budget_usd: values.max_budget_usd || undefined,
-            git_repo_url: values.git_repo_url || undefined,
-            git_base_branch: values.git_base_branch || undefined,
+            git_repo_url: project?.git_repo_url || undefined,
           });
           id = artifact.id;
           setArtifactId(id);
@@ -463,83 +444,6 @@ export function SmartBriefForm({ projectId }: SmartBriefFormProps) {
             min="0.50"
             {...register("max_budget_usd", { valueAsNumber: true })}
           />
-        </div>
-
-        {/* Git Configuration */}
-        <div className="space-y-4 rounded-[var(--radius-lg)] border border-[var(--color-border-primary)] p-4">
-          <p className="text-sm font-medium text-[var(--color-text-primary)]">Git Configuration</p>
-
-          {/* Git Connection */}
-          <div className="space-y-2">
-            <label htmlFor="git_connection_id" className="text-sm font-medium text-[var(--color-text-primary)]">
-              Git Connection
-            </label>
-            <Controller
-              name="git_connection_id"
-              control={control}
-              render={({ field }) => (
-                <select
-                  {...field}
-                  id="git_connection_id"
-                  className="h-9 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-                >
-                  <option value="">Select a connection...</option>
-                  {connections.map((conn) => (
-                    <option key={conn.id} value={conn.id}>
-                      {conn.display_name} ({conn.provider})
-                    </option>
-                  ))}
-                </select>
-              )}
-            />
-            {connections.length === 0 && (
-              <p className="text-xs text-[var(--color-text-tertiary)]">
-                No git connections configured. Add one in Settings.
-              </p>
-            )}
-          </div>
-
-          {/* Repository */}
-          {gitConnectionId && repos.length > 0 && (
-            <div className="space-y-2">
-              <label htmlFor="git_repo_url" className="text-sm font-medium text-[var(--color-text-primary)]">
-                Repository
-              </label>
-              <Controller
-                name="git_repo_url"
-                control={control}
-                render={({ field }) => (
-                  <select
-                    {...field}
-                    id="git_repo_url"
-                    className="h-9 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-                  >
-                    <option value="">Select a repository...</option>
-                    {repos.map((repo) => {
-                      const fullName = repo.full_name ?? `${repo.owner}/${repo.name}`;
-                      return (
-                        <option key={fullName} value={fullName}>
-                          {fullName}
-                        </option>
-                      );
-                    })}
-                  </select>
-                )}
-              />
-            </div>
-          )}
-
-          {/* Base Branch */}
-          <div className="space-y-2">
-            <label htmlFor="git_base_branch" className="text-sm font-medium text-[var(--color-text-primary)]">
-              Base Branch
-            </label>
-            <Input
-              id="git_base_branch"
-              placeholder="main"
-              {...register("git_base_branch")}
-            />
-          </div>
         </div>
 
         {/* Sufficiency Summary */}
