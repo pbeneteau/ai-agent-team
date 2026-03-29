@@ -155,7 +155,7 @@ export function SmartBriefForm({ projectId }: SmartBriefFormProps) {
   }, [sufficiency]);
 
   const hasCriticalIssues = sufficiency?.issues.some((i) => i.severity === "critical") ?? false;
-  const isEligible = sufficiency?.is_sufficient === true;
+  const isEligible = sufficiency?.eligible === true;
 
   // Build the full description including type-specific fields
   const buildFullDescription = useCallback((values: BriefFormValues): string => {
@@ -202,7 +202,7 @@ export function SmartBriefForm({ projectId }: SmartBriefFormProps) {
         const result = await api.artifacts.validate(id);
         setSufficiency(result);
 
-        if (result.is_sufficient) {
+        if (result.eligible) {
           toast.success("Specification is sufficient!");
         }
       } catch (error) {

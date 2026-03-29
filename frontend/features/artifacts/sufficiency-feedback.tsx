@@ -63,7 +63,10 @@ export function FieldIssues({ issues, fieldValue }: FieldIssuesProps) {
           >
             <Icon className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${config.textClass}`} />
             <div className="min-w-0 space-y-1">
-              <p className={`text-xs font-medium ${config.textClass}`}>{issue.message}</p>
+              <p className={`text-xs font-medium ${config.textClass}`}>{issue.issue}</p>
+              {issue.suggestion && (
+                <p className="text-xs text-[var(--color-text-secondary)]">{issue.suggestion}</p>
+              )}
               {issue.matched_text && fieldValue && (
                 <HighlightedText text={fieldValue} match={issue.matched_text} severity={issue.severity} />
               )}

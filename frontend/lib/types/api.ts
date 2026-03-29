@@ -295,16 +295,17 @@ export interface ArtifactFilters {
 }
 
 export interface SufficiencyResponse {
-  is_sufficient: boolean;
+  eligible: boolean;
+  score: number;
   issues: SufficiencyIssue[];
-  suggestions: string[];
 }
 
 export interface SufficiencyIssue {
   field: string;
-  severity: "critical" | "warning" | "info";
-  message: string;
-  matched_text: string | null;
+  severity: "critical" | "warning";
+  matched_text: string;
+  issue: string;
+  suggestion: string;
 }
 
 export interface DelegateRequest {
