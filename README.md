@@ -149,7 +149,7 @@ ai-agent-team/
 │   └── tests/
 │       ├── e2e/                   # End-to-end tests
 │       └── *.py                   # 760 unit + integration tests
-├── frontend/
+├── frontend/                      # Next.js 15 frontend (regular directory)
 │   ├── app/                       # Next.js App Router
 │   │   ├── (app)/                     # Main app (projects, roster, settings)
 │   │   │   ├── projects/[projectId]/      # Project detail, brief, documents
@@ -164,11 +164,13 @@ ai-agent-team/
 │   │   ├── onboarding/               # Multi-step onboarding form
 │   │   ├── projects/                  # Brief editor, document manager
 │   │   └── roster/                    # Agent cards, detail tabs, research dialog
-│   └── lib/
-│       ├── api/                   # Typed API client (all 44 endpoints)
-│       ├── hooks/                 # TanStack Query hooks + WebSocket
-│       ├── stores/                # Zustand (UI state, text selection)
-│       └── types/api.ts           # TypeScript API types
+│   ├── lib/
+│   │   ├── api/                   # Typed API client (all 44 endpoints)
+│   │   ├── hooks/                 # TanStack Query hooks + WebSocket
+│   │   ├── stores/                # Zustand (UI state, text selection)
+│   │   └── types/api.ts           # TypeScript API types
+│   ├── AGENTS.md                  # Next.js agent rules for AI code generation
+│   └── .prettierrc                # Prettier formatting config
 ├── docs/
 │   ├── VISION_2.0.md              # Product vision
 │   └── TDD/                      # 6 Technical Design Documents
@@ -308,9 +310,4 @@ All key endpoints meet their latency targets (p95, mocked where applicable):
 | `docs/TDD/02_BACKEND_ARCHITECTURE_TDD.md` | 12 tables, S3 layout, Celery tasks, circuit breakers |
 | `docs/TDD/03_AI_AGENT_ENGINE_TDD.md` | Prompts, DAG templates, memory, 8 tools, reflection |
 | `docs/TDD/04_API_AND_INTEGRATIONS_TDD.md` | All 49 endpoint specs with request/response schemas |
-| `docs/TDD/05_FRONTEND_UX_TDD.md` | Design tokens, routes, state management, UX specs |
-| `docs/TDD/06_IMPLEMENTATION_ROADMAP.md` | 74 tickets across 17 sprints |
-
-## License
-
-Private — all rights reserved.
+| `docs/TDD/05_FRONTEND_UX_TDD.md` | Design tokens, routes, state management

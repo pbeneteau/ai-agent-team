@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Convert the `frontend` directory from a git submodule to a regular tracked directory, making it easier to develop and review frontend changes within the main repository without requiring submodule initialization.
+
 ---
 
 ## [0.1.0] - 2026-03-29
