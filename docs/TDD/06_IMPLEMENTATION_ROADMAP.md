@@ -22,9 +22,9 @@
 
 | Layer | Starting State | Final State |
 |---|---|---|
-| **Backend** | Clean slate (all V1 code removed) | 12 SQLAlchemy models, 9 Alembic migrations, 10 route files, full AI engine, 7 tools |
-| **Docker** | Nothing | Full `docker-compose.yml` with postgres/redis/minio/backend/worker/beat/frontend |
-| **Alembic** | Nothing | 9 migrations (8 schema + 1 workspace context fields) |
+| **Backend** | Clean slate (all V1 code removed) | 12 SQLAlchemy models, 10 Alembic migrations, 11 route files, full AI engine, 8 tools |
+| **Docker** | Nothing | Full `docker-compose.yml` with postgres/redis/minio/backend/worker/beat/frontend + migrate/minio-init |
+| **Alembic** | Nothing | 10 migrations (8 schema + workspace context fields + agent role) |
 | **Frontend** | Nothing | Next.js 15 + full feature set; App Router with `(app)` and `(onboarding)` route groups |
 
 ### Approach: Full Clean Slate

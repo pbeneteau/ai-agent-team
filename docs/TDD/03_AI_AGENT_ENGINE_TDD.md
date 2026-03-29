@@ -182,7 +182,7 @@ class DagWave:
     label: str                      # Heartbeat UI label (e.g., "Planning phase...")
     slots: list[DagSlot]            # Agents to run in parallel
     depends_on: list[str]           # slot_ids from previous waves whose output this wave receives
-    wave_type: str = "execution"    # "planning" | "execution" | "review"
+    wave_type: str = "execution"    # "planning" | "validation" | "execution" | "review"
 
 @dataclass
 class DagTemplate:
@@ -261,7 +261,9 @@ Each template executes in three phases:
 - Workers have full tool access: `file_read`, `file_write`, `web_search`, `web_browser`, `vector_search`, `mcp_*`, `git_clone`, `git_push`.
 
 **Phase 3 — Review (loop, up to `max_iterations`)**
-- Review lead agents run in parallel. They receive worker files pre-populated in their `ExecutionContext.files` (read-only view).
+- Review lead agents run in parallel. They receive worker files pre-populated in their `ExecutionContext.files`.
+- Review leads have `file_read` + `code_exec` tools — they can read files and run sandboxed shell commands (tests, lint, build) to verify functional correctness (AD-29).
+- Each template injects grading criteria (AD-26) — a numbered PASS/FAIL checklist the review lead must evaluate against.
 - Each review lead outputs exactly one of three decisions at the end of their output:
   - `APPROVE` — output is acceptable. Proceed to finalize.
   - `MINOR_FIX` — small corrections needed. The lead patches files directly using `file_write` (review leads temporarily enter execution phase for this purpose), then finalize.
@@ -403,7 +405,7 @@ The hydrated `dag_plan` stored in `ExecutionWave.dag_plan` includes these fields
 - `max_iterations` (`integer`) — from the template; controls the execution → review loop cap.
 
 **Per wave:**
-- `wave_type` (`"planning"` | `"execution"` | `"review"`) — drives tool availability and delegation-plan injection logic.
+- `wave_type` (`"planning"` | `"validation"` | `"execution"` | `"review"`) — drives tool availability and delegation-plan injection logic.
 
 **Per slot:**
 - `is_lead` (`boolean`) — whether this agent slot is a lead or worker.
@@ -772,29 +774,35 @@ All agent tools are exposed via Anthropic's native `tool_use` feature. Each tool
 
 ### 6.2 Tool Availability by Phase
 
-| Tool | Learning | Planning | Execution | Review | Reflection |
-|---|---|---|---|---|---|
-| `file_read` | Yes | Yes | Yes | Yes | Yes |
-| `file_write` | Yes | No | Yes | No | Yes |
-| `web_search` | Yes | Yes | Yes | No | No |
-| `web_browser` | Yes | Yes | Yes | No | No |
-| `vector_search` | Yes | Yes | Yes | No | No |
-| `mcp_*` | No | No | Yes | No | No |
-| `git_clone` | No | No | Yes | No | No |
-| `git_push` | No | No | Yes | No | No |
+| Tool | Learning | Planning | Validation | Execution | Review | Reflection |
+|---|---|---|---|---|---|---|
+| `file_read` | Yes | Yes | Yes | Yes | Yes | Yes |
+| `file_write` | Yes | No | No | Yes | No | Yes |
+| `code_exec` | No | No | No | No | Yes | No |
+| `web_search` | Yes | Yes | No | Yes | No | No |
+| `web_browser` | Yes | Yes | No | Yes | No | No |
+| `vector_search` | Yes | Yes | No | Yes | No | No |
+| `mcp_*` | No | No | No | Yes | No | No |
+| `git_clone` | No | No | No | Yes | No | No |
+| `git_push` | No | No | No | Yes | No | No |
 
 Notes:
 - **Planning leads** research but do not write files (`file_write` excluded).
-- **Review leads** receive worker files pre-populated in their `ExecutionContext.files` (read-only via `file_read`). `file_write` is excluded unless the review decision is `MINOR_FIX`, in which case the orchestrator re-runs the review lead agent in `execution` phase for the patch step.
+- **Validation leads** evaluate delegation plans — `file_read` only, pre-populated with planning outputs (Ticket 17.3, AD-27).
+- **Review leads** receive worker files pre-populated in their `ExecutionContext.files`. They can read files and run `code_exec` (sandboxed shell execution) to verify functional correctness (Ticket 17.5, AD-29). `file_write` is excluded unless the review decision is `MINOR_FIX`, in which case the orchestrator re-runs the review lead agent in `execution` phase for the patch step.
 - **Reflection** uses `file_read` and `file_write` for in-process scratchpad work but never touches the web or MCP.
 
 During execution, the orchestrator builds the tool list based on the phase:
 
 ```python
 def get_tools_for_phase(phase: str, workspace_mcp: list, workspace_git: list) -> list[ToolSpec]:
+    if phase == "review":
+        return [file_read_tool, code_exec_tool]  # read + sandboxed execution
+    if phase == "validation":
+        return [file_read_tool]  # read-only, pre-populated with planning outputs
     base = [file_read_tool]
     if phase in ("learning", "planning", "execution", "reflection"):
-        base += [file_write_tool]  # excluded from "review" phase
+        base += [file_write_tool]
     if phase in ("learning", "planning", "execution"):
         base += [web_search_tool, web_browser_tool, vector_search_tool]
     if phase == "execution":
@@ -896,6 +904,35 @@ Dynamically generated per MCP connection:
 
 **Executor:** Proxies the call to the MCP server. Timeout: 30 seconds.
 
+#### `code_exec` (AD-29, Ticket 17.5)
+
+Available during **review phase only**. Lets review leads verify functional correctness by running code.
+
+```json
+{
+  "name": "code_exec",
+  "description": "Execute a shell command in a sandboxed environment containing the artifact's code files.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "command": { "type": "string", "description": "Shell command to execute" },
+      "working_dir": { "type": "string", "description": "Working directory relative to project root", "default": "." }
+    },
+    "required": ["command"]
+  }
+}
+```
+
+**Executor:**
+1. Materializes `context.files` to a fresh temp directory (`tempfile.mkdtemp()`).
+2. Runs command via `asyncio.create_subprocess_shell()` with captured stdout/stderr.
+3. 30-second timeout (`asyncio.wait_for`). Process killed on timeout.
+4. Output truncated: 8K stdout + 4K stderr.
+5. Temp directory cleaned up in `finally` block.
+6. Results are NOT written back to `context.files` (observation-only).
+
+**Security:** Sensitive env vars stripped (`ANTHROPIC_API_KEY`, `DATABASE_URL`, etc.). `HOME` set to system tempdir. On Linux, `unshare --net` isolates network access. No persistent state between calls.
+
 ### 6.4 Agent Execution Loop
 
 Using Anthropic's native messages API with `tool_use`. A `tool_executor` dispatch function is provided by the caller (built by `create_tool_executor()` in `tools/registry.py`):
@@ -908,51 +945,45 @@ async def run_agent(
     model: str,
     *,
     tool_executor: ToolExecutor | None = None,
-    max_iterations: int = 15,
-    max_tokens: int = 8192,
+    max_iterations: int | None = None,   # defaults to settings.AGENT_MAX_TOOL_ITERATIONS (15)
+    max_tokens: int | None = None,       # defaults to settings.AGENT_DEFAULT_MAX_TOKENS (8192)
 ) -> AgentResult:
     messages = [{"role": "user", "content": user_message}]
-    written_files: dict[str, str] = {}
-    total_input_tokens = 0
-    total_output_tokens = 0
+    written_files, tool_calls_log = {}, []
+    total_input_tokens = total_output_tokens = context_tokens_peak = 0
 
     for i in range(max_iterations):
-        # API call retries 429/529 with 1s/2s/4s backoff (_call_api_with_retry)
         response = await _call_api_with_retry(client, model, max_tokens, system_prompt, messages, tools)
         total_input_tokens += response.usage.input_tokens
         total_output_tokens += response.usage.output_tokens
+        context_tokens_peak = max(context_tokens_peak, response.usage.input_tokens)
 
         if response.stop_reason == "end_turn":
             result_text = extract_text_blocks(response.content)
-            return AgentResult(
-                text=result_text,
-                files=written_files,
-                input_tokens=total_input_tokens,
-                output_tokens=total_output_tokens,
-                assumptions=extract_assumptions(result_text),
-                sources=extract_sources(result_text),
-            )
+            return AgentResult(text=result_text, files=written_files, ...)
 
         if response.stop_reason == "tool_use":
-            tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
+                    tool_calls_log.append(block.name)
                     result = await tool_executor(block.name, block.input)
-                    # Intercept file_write to collect written files
                     if block.name == "file_write":
                         written_files[block.input["path"]] = block.input["content"]
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": result,
-                    })
             messages.append({"role": "assistant", "content": response.content})
             messages.append({"role": "user", "content": tool_results})
+
+            # Mid-loop context summarization (AD-28): every 3 iterations,
+            # if accumulated messages exceed AGENT_CONTEXT_SUMMARIZATION_THRESHOLD,
+            # call Haiku to compress the conversation into a 2-message summary.
+            if (i + 1) % settings.AGENT_SUMMARIZATION_CHECK_INTERVAL == 0:
+                messages = await _summarize_conversation(messages, system_prompt, i)
 
     raise AgentMaxIterationError(f"Agent did not complete in {max_iterations} iterations")
 ```
 
 **Transient error retry:** each `_call_api_with_retry` call retries on `429 RateLimitError` and `529 overloaded` with delays of 1s, 2s, 4s before propagating the exception. Non-transient errors (400, 401) raise immediately.
+
+**Mid-loop context summarization (AD-28):** When accumulated message tokens exceed `AGENT_CONTEXT_SUMMARIZATION_THRESHOLD` (default 60K), the loop calls Haiku to produce a compressed state snapshot. The conversation is replaced with a 2-message summary (`[user: summary, assistant: "Continuing..."]`). Checked every `AGENT_SUMMARIZATION_CHECK_INTERVAL` iterations (default 3) so short runs never trigger it. Fails open — if summarization errors, original messages are kept.
 
 **`AgentResult` fields:**
 - `text`: Final extracted text
@@ -960,6 +991,9 @@ async def run_agent(
 - `input_tokens` / `output_tokens`: Cumulative across all iterations
 - `assumptions`: Extracted `[ASSUMPTION: ...]` and `[TBD: ...]` tags (flat list of strings)
 - `sources`: Extracted `[Source: ...]` citation tags (flat list of strings)
+- `tool_loop_iterations`: Number of API round-trips in the loop (Ticket 17.1)
+- `tool_calls_log`: Ordered list of tool names invoked (Ticket 17.1)
+- `context_tokens_peak`: Max input token count across all API calls (Ticket 17.1)
 
 ---
 
@@ -1405,6 +1439,17 @@ Tying all sections together. This is the complete lifecycle of a single `execute
    │
    └── 2c. Parse delegation plans from all lead outputs (Section 2A.3)
 
+2.5 DELEGATION VALIDATION (optional, AD-27, Ticket 17.3)
+   │  Only if template.validation_wave exists (full_feature, architecture,
+   │  api_integration, data_feature). Skipped for simpler templates.
+   │
+   ├── Pre-populate context with planning text outputs
+   ├── Run validation wave (phase = 'validation': file_read only)
+   ├── Parse decision: APPROVED or REVISE
+   ├── If APPROVED → continue to step 3
+   └── If REVISE → re-run planning waves with feedback (max 1 re-plan)
+                   → re-extract delegation plan → re-validate
+
 3. EXECUTION → REVIEW LOOP (up to dag_plan.max_iterations times)
    │
    ├── 3a. EXECUTION WAVE (wave_type = "execution")
@@ -1421,10 +1466,12 @@ Tying all sections together. This is the complete lifecycle of a single `execute
    ├── 3b. REVIEW WAVE (wave_type = "review")
    │   ├── Update heartbeat (current_step = "Reviewing...", cost)
    │   ├── FOR EACH REVIEW LEAD SLOT (concurrently via asyncio.gather):
-   │   │   ├── Load Agent, Memory, Tools (phase = 'review': file_read only)
+   │   │   ├── Load Agent, Memory, Tools (phase = 'review': file_read + code_exec)
    │   │   ├── Pre-populate ExecutionContext.files with all worker output files
+   │   │   ├── Inject template-specific grading criteria (AD-26, Ticket 17.2)
    │   │   ├── Assemble Prompt (recency bias order; output format = review lead rules)
    │   │   ├── Run Agent Loop (max 15 tool iterations)
+   │   │   ├── Emit ExecutionMetrics telemetry (AD-30, Ticket 17.1)
    │   │   └── Extract decision token (APPROVE / MINOR_FIX / REVISE)
    │   │
    │   ├── Compute consensus decision (REVISE > MINOR_FIX > APPROVE)
@@ -1470,7 +1517,13 @@ Tying all sections together. This is the complete lifecycle of a single `execute
 - [ ] MINOR_FIX re-runs review leads in execution phase (file_write enabled) for patching
 - [ ] REVISE extracts per-specialist feedback and re-queues execution wave; iteration counter increments
 - [ ] Force-finalize triggers at `max_iterations`; `[FORCE_FINALIZED: max_iterations reached]` tag is stored in `ArtifactVersion.assumptions`
-- [ ] Tool availability is correctly gated by phase: planning (no file_write, no MCP/git), review (file_read only), execution (all tools)
+- [ ] Tool availability is correctly gated by phase: planning (file_read + web), validation (file_read only), review (file_read + code_exec), execution (all tools)
+- [ ] Template-specific review criteria (AD-26) are injected into review lead prompts as a numbered PASS/FAIL checklist
+- [ ] Delegation validation (AD-27) runs on complex templates; REVISE triggers max 1 re-plan
+- [ ] Mid-loop context summarization (AD-28) triggers at 60K tokens, checked every 3 iterations, fails open
+- [ ] `code_exec` (AD-29) materializes files to temp dir, runs with 30s timeout, cleans up, strips sensitive env vars
+- [ ] Execution telemetry (AD-30) emits structured JSON for agent_run, review_loop, memory_compaction, context_summarization events
+- [ ] All 12 agent tuning parameters are configurable via env vars in settings.py
 - [ ] Agent skills + work learnings stay within 8,000 token budget; compaction triggers when ceiling is approached
 - [ ] Compaction produces smaller output than input and preserves specific, hard-won knowledge
 - [ ] Auto-assume rule is present in every agent's system prompt; assumptions are extracted via regex and stored in ArtifactVersion

@@ -983,11 +983,12 @@ Migration 6: artifact_versions
 Migration 7: contextual_comments, document_chunks
 Migration 8: Seed default workspace (id = hardcoded MVP workspace)
 Migration 9: Add context fields to workspaces (product_description, company_stage, target_audience, main_goals, existing_team); make documents.project_id nullable; add documents.workspace_id FK
+Migration 10: Add `role` column to agents (`lead` | `worker`, default `worker`)
 ```
 
 ### 8.2 Current Migration State
 
-9 Alembic migrations are in place following the order defined in Section 8.1. All tables are created and seeded. The default workspace (id = "1") is inserted by Migration 8. Migration 9 added context fields to `workspaces`, made `documents.project_id` nullable, and added `documents.workspace_id`.
+10 Alembic migrations are in place following the order defined in Section 8.1. All tables are created and seeded. The default workspace (id = "1") is inserted by Migration 8. Migration 9 added context fields to `workspaces`, made `documents.project_id` nullable, and added `documents.workspace_id`. Migration 10 added the `role` column (`lead` | `worker`, default `worker`) to the `agents` table.
 
 ### 8.3 pgvector Extension
 
