@@ -10,6 +10,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [0.1.1] - 2026-03-29
+
+### Added
+
+- Restore `frontend/AGENTS.md` with guidance for AI agents noting that this version of Next.js may differ significantly from training data and directing agents to read the bundled docs before writing code.
+- Restore `frontend/CLAUDE.md` as a pointer to `AGENTS.md` for Claude-based tooling.
+
+---
+
 ## [0.1.0] - 2026-03-29
 
 ### Changed
@@ -18,5 +27,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
-[Unreleased]: ../../compare/v0.1.0...HEAD
+[Unreleased]: ../../compare/v0.1.1...HEAD
+[0.1.1]: ../../compare/v0.1.0...v0.1.1
 [0.1.0]: ../../releases/tag/v0.1.0
