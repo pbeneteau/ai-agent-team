@@ -192,7 +192,7 @@ The CI/CD pipeline is defined entirely in `.github/workflows/`.
 **Stages:**
 1. **Lint & Format** — ESLint and Prettier checks across `backend/` and `frontend/`.
 2. **Type Check** — `tsc --noEmit` for both packages, ensuring shared type contracts hold.
-3. **Unit & Integration Tests** — Vitest (frontend) and Jest/Vitest (backend); database integration tests run against a ephemeral PostgreSQL container via Docker service.
+3. **Unit & Integration Tests** — Vitest (frontend) and Jest/Vitest (backend); database integration tests run against an ephemeral PostgreSQL container via Docker service.
 4. **Build** — Vite production build for frontend; TypeScript compile + Docker image build for backend.
 5. **Staging Deploy** — Automated push to staging on merge to `main`.
 6. **Smoke Tests** — Automated health-check and critical-path API tests against the staging environment.

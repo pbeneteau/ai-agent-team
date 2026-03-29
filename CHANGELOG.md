@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Add `docs/ARCHITECTURE.md` with a comprehensive system-level architecture overview covering module map, technology stack, key architectural patterns (agent orchestration loop, event-driven run streaming, shared type contracts), module dependency graph, deployment topology, cross-cutting concerns, and an index of Architecture Decision Records (ADR-001 through ADR-007).
+- Document `frontend/AGENTS.md` and `frontend/CLAUDE.md` in the root `README.md` directory tree.
+
 ---
 
 ## [0.1.1] - 2026-03-29

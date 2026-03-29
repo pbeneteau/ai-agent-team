@@ -172,6 +172,7 @@ ai-agent-team/
 │       ├── stores/                # Zustand (UI state, text selection)
 │       └── types/api.ts           # TypeScript API types
 ├── docs/
+│   ├── ARCHITECTURE.md            # System-level architecture overview
 │   ├── VISION_2.0.md              # Product vision
 │   └── TDD/                      # 6 Technical Design Documents
 └── docker-compose.yml             # 7 services: postgres, redis, minio, backend, worker, beat, frontend
@@ -305,6 +306,7 @@ All key endpoints meet their latency targets (p95, mocked where applicable):
 
 | Document | Contents |
 |---|---|
+| `docs/ARCHITECTURE.md` | System-level architecture overview, module map, ADRs, deployment pipeline |
 | `docs/VISION_2.0.md` | Product vision and strategic context |
 | `docs/TDD/01_PRD_AND_WORKFLOWS.md` | User personas, 6 journeys, state machine, edge cases |
 | `docs/TDD/02_BACKEND_ARCHITECTURE_TDD.md` | 12 tables, S3 layout, Celery tasks, circuit breakers |
