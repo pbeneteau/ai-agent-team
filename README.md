@@ -150,6 +150,8 @@ ai-agent-team/
 │       ├── e2e/                   # End-to-end tests
 │       └── *.py                   # 760 unit + integration tests
 ├── frontend/
+│   ├── AGENTS.md                  # Next.js agent rules (read before writing frontend code)
+│   ├── CLAUDE.md                  # Imports AGENTS.md rules for Claude
 │   ├── app/                       # Next.js App Router
 │   │   ├── (app)/                     # Main app (projects, roster, settings)
 │   │   │   ├── projects/[projectId]/      # Project detail, brief, documents
